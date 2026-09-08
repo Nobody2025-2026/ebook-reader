@@ -34,3 +34,6 @@ images/
 
 # 测试用的真实电子书，体积大且有版权，只放本地不入库
 books/
+
+# 真机验收时 Playwright 的截图，偶然产物
+.screenshots/

@@ -7,6 +7,24 @@
   </head>
   <body>
     <div id="root"></div>
+    <script>
+      // 解析库的依赖链里有几个 Node 味的包（jszip 用 process.nextTick，
+      // path-browserify 用 process.cwd），浏览器没有 process，不补就打不开书。
+      // 这里只给最小实现，不外挂整个 node polyfill。
+      if (!window.process) {
+        window.process = {
+          nextTick: function (fn) {
+            setTimeout(fn, 0)
+          },
+          cwd: function () {
+            return '/'
+          },
+          env: {},
+          version: '',
+          platform: 'browser',
+        }
+      }
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

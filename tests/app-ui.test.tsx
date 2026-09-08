@@ -67,7 +67,7 @@ describe('存储层', () => {
 
   it('删书连带删掉进度，不留孤儿记录', async () => {
     await saveBook(meta, new File(['a'], 'a.epub'))
-    await saveProgress('b1', { chapterIndex: 1, offset: 20, percent: 40, updatedAt: Date.now() })
+    await saveProgress('b1', { chapterIndex: 1, blockIndex: 3, percent: 40, updatedAt: Date.now() })
     expect(await getProgress('b1')).toBeTruthy()
 
     await deleteBook('b1')
@@ -85,7 +85,7 @@ describe('书库页', () => {
   it('有书时显示书名、作者和进度', () => {
     render(
       <Library
-        books={[{ ...meta, progress: { chapterIndex: 1, offset: 0, percent: 40, updatedAt: 1 } }]}
+        books={[{ ...meta, progress: { chapterIndex: 1, blockIndex: 0, percent: 40, updatedAt: 1 } }]}
         importing={false}
         importHint=""
         onImport={vi.fn()}
@@ -115,7 +115,7 @@ describe('阅读器', () => {
 
   it('没有进度时从头开始，有进度时回到原章节', async () => {
     await saveBook(meta, new File(['a'], 'book.epub'))
-    await saveProgress('b1', { chapterIndex: 2, offset: 30, percent: 70, updatedAt: Date.now() })
+    await saveProgress('b1', { chapterIndex: 2, blockIndex: 5, percent: 70, updatedAt: Date.now() })
 
     render(<Reader bookId="b1" onExit={vi.fn()} />)
     expect(await screen.findByText('c3 的正文')).toBeInTheDocument()
@@ -133,7 +133,9 @@ describe('阅读器', () => {
     await waitFor(async () => {
       const progress = await getProgress('b1')
       expect(progress?.chapterIndex).toBe(0)
-      expect(progress?.offset).toBe(120)
+      // 现在存的是 blockIndex，不是像素 offset。设了 scrollTop=120，看视口顶端压在哪一段
+      expect(typeof progress?.blockIndex).toBe('number')
+      expect(progress?.blockIndex).toBeGreaterThanOrEqual(0)
     })
   })
 

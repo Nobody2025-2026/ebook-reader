@@ -2,7 +2,7 @@
 // 纯函数测试：不碰 DOM，跑得最快，优先把可测的逻辑都放这儿
 import { describe, expect, it } from 'vitest'
 import { lazyLoadImages, prepareChapterHtml, sanitizeChapterHtml } from '../src/lib/sanitize'
-import { computePercent, locateCurrent } from '../src/lib/progress'
+import { computePercent, findAnchorBlock } from '../src/lib/progress'
 import { parseHash } from '../src/lib/router'
 
 describe('sanitizeChapterHtml', () => {
@@ -44,35 +44,70 @@ describe('prepareChapterHtml', () => {
   })
 })
 
-describe('locateCurrent', () => {
-  const tops = [0, 1000, 2500]
-
-  it('滚动位置落在哪一章就报哪一章', () => {
-    expect(locateCurrent(tops, 0)).toEqual({ chapterIndex: 0, offset: 0 })
-    expect(locateCurrent(tops, 500)).toEqual({ chapterIndex: 0, offset: 500 })
-    expect(locateCurrent(tops, 1200)).toEqual({ chapterIndex: 1, offset: 200 })
+describe('findAnchorBlock', () => {
+  it('空数组安全返回 0', () => {
+    expect(findAnchorBlock([], 0)).toEqual({ chapterIndex: 0, blockIndex: 0 })
   })
 
-  it('正好落在章节分界上算后一章的开头', () => {
-    expect(locateCurrent(tops, 1000)).toEqual({ chapterIndex: 1, offset: 0 })
+  it('视口顶压着第一块就报第一块', () => {
+    const blocks = [
+      { top: 0, bottom: 50, chapterIndex: 0, blockIndex: 0 },
+      { top: 100, bottom: 200, chapterIndex: 0, blockIndex: 1 },
+    ]
+    expect(findAnchorBlock(blocks, 0)).toEqual({ chapterIndex: 0, blockIndex: 0 })
   })
 
-  it('没有章节时安全返回 0', () => {
-    expect(locateCurrent([], 500)).toEqual({ chapterIndex: 0, offset: 0 })
+  it('视口顶压着中间某块就报那一块', () => {
+    const blocks = [
+      { top: 0, bottom: 50, chapterIndex: 0, blockIndex: 0 },
+      { top: 100, bottom: 200, chapterIndex: 0, blockIndex: 1 },
+      { top: 300, bottom: 400, chapterIndex: 0, blockIndex: 2 },
+    ]
+    expect(findAnchorBlock(blocks, 150)).toEqual({ chapterIndex: 0, blockIndex: 1 })
+  })
+
+  it('跨章节时返回对应章节内的块下标', () => {
+    const blocks = [
+      { top: 0, bottom: 50, chapterIndex: 0, blockIndex: 0 },
+      { top: 100, bottom: 200, chapterIndex: 0, blockIndex: 1 },
+      { top: 500, bottom: 600, chapterIndex: 1, blockIndex: 0 },
+      { top: 700, bottom: 800, chapterIndex: 1, blockIndex: 1 },
+    ]
+    expect(findAnchorBlock(blocks, 550)).toEqual({ chapterIndex: 1, blockIndex: 0 })
+    expect(findAnchorBlock(blocks, 750)).toEqual({ chapterIndex: 1, blockIndex: 1 })
+  })
+
+  it('视口比所有块都靠下时返回最后一块', () => {
+    const blocks = [
+      { top: 0, bottom: 50, chapterIndex: 0, blockIndex: 0 },
+      { top: 100, bottom: 200, chapterIndex: 0, blockIndex: 1 },
+    ]
+    expect(findAnchorBlock(blocks, 9999)).toEqual({ chapterIndex: 0, blockIndex: 1 })
   })
 })
 
 describe('computePercent', () => {
   it('按章节序号 + 章内比例折算全书百分比', () => {
-    expect(computePercent(0, 0, 1000, 10)).toBe(0)
-    expect(computePercent(0, 500, 1000, 10)).toBe(5)
-    expect(computePercent(1, 0, 1000, 10)).toBe(10)
+    // 10 章，读到第 1 章开头 = 10%
+    expect(computePercent(1, 10, 0)).toBe(10)
+    // 读到第 1 章的一半 = 15%
+    expect(computePercent(1, 10, 0.5)).toBeCloseTo(15, 5)
+    // 读到第 5 章开头 = 50%
+    expect(computePercent(5, 10, 0)).toBe(50)
+  })
+
+  it('章内比例被夹到 0~1', () => {
+    expect(computePercent(0, 10, -1)).toBe(0)
+    expect(computePercent(0, 10, 2)).toBe(10)
+  })
+
+  it('总章节为 0 时安全返回 0', () => {
+    expect(computePercent(0, 0, 0.5)).toBe(0)
   })
 
   it('结果永远夹在 0~100 之间', () => {
-    expect(computePercent(0, -100, 1000, 10)).toBe(0)
-    expect(computePercent(99, 99999, 10, 2)).toBe(100)
-    expect(computePercent(0, 0, 1000, 0)).toBe(0)
+    expect(computePercent(99, 100, 0.5)).toBeCloseTo(99.5, 1)
+    expect(computePercent(0, 1, 0)).toBe(0)
   })
 })
 

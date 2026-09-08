@@ -1,8 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { openEpub, type ChapterRef, type OpenedBook } from '../lib/epub'
-import { computePercent, locateCurrent, type ReadingProgress } from '../lib/progress'
+import {
+  computePercent,
+  findAnchorBlock,
+  type BlockRect,
+  type ReadingProgress,
+} from '../lib/progress'
 import { prepareChapterHtml } from '../lib/sanitize'
 import { getBookFile, getBookMeta, getProgress, saveProgress } from '../lib/storage'
+
+// 块级元素选择器：覆盖小说/学术书里绝大多数情况。
+// 真实样本《涛动周期论》里就是这几种在撑页面。
+const BLOCK_SELECTOR = 'p, h1, h2, h3, h4, h5, h6, li, blockquote, pre'
 
 interface LoadedChapter {
   index: number
@@ -28,7 +37,10 @@ export function Reader({ bookId, onExit }: Props) {
   const nodesRef = useRef(new Map<number, HTMLElement>())
   const loadedIdxRef = useRef(new Set<number>())
   const loadingRef = useRef(false)
-  const pendingRestore = useRef<{ index: number; offset: number } | null>(null)
+  // 待恢复的进度：chapter + block 双重定位。delta 不存（懒加载图片会让像素位置飘）。
+  const pendingRestore = useRef<{ chapterIndex: number; blockIndex: number } | null>(null)
+  // 是否已经尝试过恢复——避免后续懒加载新章节时把读者强行拽回去
+  const hasRestoredRef = useRef(false)
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const latestProgress = useRef<ReadingProgress | null>(null)
   const sentinelRef = useRef<HTMLDivElement | null>(null)
@@ -44,7 +56,9 @@ export function Reader({ bookId, onExit }: Props) {
     try {
       const { html, css } = await book.loadChapter(chapters[index].id)
       loadedIdxRef.current.add(index)
-      setLoaded((prev) => [...prev, { index, html: prepareChapterHtml(html), css }].sort((a, b) => a.index - b.index))
+      setLoaded((prev) =>
+        [...prev, { index, html: prepareChapterHtml(html), css }].sort((a, b) => a.index - b.index),
+      )
     } catch (err) {
       setError(`第 ${index + 1} 章加载失败：${err instanceof Error ? err.message : String(err)}`)
     } finally {
@@ -52,7 +66,7 @@ export function Reader({ bookId, onExit }: Props) {
     }
   }, [])
 
-  // 打开书：读文件 → 解析 → 读进度 → 加载起始章节
+  // 打开书
   useEffect(() => {
     let cancelled = false
     setStatus('loading')
@@ -60,7 +74,6 @@ export function Reader({ bookId, onExit }: Props) {
 
     void (async () => {
       try {
-        // 先取元数据，才能知道文件名（书文件是以字节存的，读回来要重建 File）
         const [meta, progress] = await Promise.all([getBookMeta(bookId), getProgress(bookId)])
         const file = await getBookFile(bookId, meta?.fileName ?? 'book.epub')
         if (!file) throw new Error('找不到这本书的内容，可能已被清理')
@@ -75,7 +88,12 @@ export function Reader({ bookId, onExit }: Props) {
         setTitle(book.meta.title)
 
         const start = Math.min(Math.max(progress?.chapterIndex ?? 0, 0), book.chapters.length - 1)
-        pendingRestore.current = progress ? { index: start, offset: progress.offset } : null
+        if (progress) {
+          pendingRestore.current = {
+            chapterIndex: start,
+            blockIndex: Math.max(progress.blockIndex, 0),
+          }
+        }
         setPercent(progress?.percent ?? 0)
 
         await loadChapter(start)
@@ -91,37 +109,54 @@ export function Reader({ bookId, onExit }: Props) {
     return () => {
       cancelled = true
       if (saveTimer.current) clearTimeout(saveTimer.current)
-      // 关书时释放 blob URL，否则多本书来回切换内存只涨不降
       bookRef.current?.destroy()
       bookRef.current = null
       loadedIdxRef.current.clear()
       nodesRef.current.clear()
+      hasRestoredRef.current = false
     }
   }, [bookId, loadChapter])
 
-  const applyRestore = useCallback(() => {
-    const pending = pendingRestore.current
-    const container = containerRef.current
-    if (!pending || !container) return
-    const el = nodesRef.current.get(pending.index)
-    if (!el) return
-    container.scrollTop = el.offsetTop + pending.offset
+  // 收集所有 chapter 内的块级元素视口坐标
+  const collectBlocks = useCallback((): BlockRect[] => {
+    const blocks: BlockRect[] = []
+    for (const [chapterIndex, node] of nodesRef.current.entries()) {
+      node.querySelectorAll(BLOCK_SELECTOR).forEach((el, i) => {
+        const rect = el.getBoundingClientRect()
+        blocks.push({
+          top: rect.top,
+          bottom: rect.bottom,
+          chapterIndex,
+          blockIndex: i,
+        })
+      })
+    }
+    blocks.sort((a, b) => a.top - b.top)
+    return blocks
   }, [])
 
-  // 恢复进度：渲染完先跳一次；图片陆续加载会把内容顶下去，所以 600ms 后再补一次
+  // 进度恢复：把目标段落 scrollIntoView，多次重试以抗住懒加载图片陆续撑开布局
   useEffect(() => {
     if (status !== 'ready' || !pendingRestore.current) return
-    applyRestore()
-    const raf = requestAnimationFrame(applyRestore)
-    const timer = setTimeout(() => {
-      applyRestore()
-      pendingRestore.current = null
-    }, 600)
-    return () => {
-      cancelAnimationFrame(raf)
-      clearTimeout(timer)
+    if (hasRestoredRef.current) return
+    const { chapterIndex, blockIndex } = pendingRestore.current
+    hasRestoredRef.current = true // 立刻标记，避免后续懒加载触发回拽
+
+    const tryRestore = () => {
+      const chapterEl = nodesRef.current.get(chapterIndex)
+      if (!chapterEl) return false
+      const block = chapterEl.querySelectorAll(BLOCK_SELECTOR)[blockIndex] as HTMLElement | undefined
+      if (!block) return false
+      // block:'start' = 把元素顶部对齐到视口顶部。图片后续加载会顶下去，
+      // 所以重试几次。
+      block.scrollIntoView({ block: 'start', behavior: 'auto' })
+      return true
     }
-  }, [status, loaded, applyRestore])
+
+    const tries = [0, 80, 250, 700, 1800]
+    const timers = tries.map((delay) => setTimeout(tryRestore, delay))
+    return () => timers.forEach(clearTimeout)
+  }, [status, loaded])
 
   const flushProgress = useCallback(() => {
     if (!latestProgress.current) return
@@ -132,35 +167,30 @@ export function Reader({ bookId, onExit }: Props) {
     const container = containerRef.current
     if (!container) return
 
-    const blocks = [...nodesRef.current.entries()]
-      .sort((a, b) => a[0] - b[0])
-      .map(([index, el]) => ({ index, top: el.offsetTop, height: el.offsetHeight }))
+    const blocks = collectBlocks()
     if (blocks.length === 0) return
 
-    const pos = locateCurrent(blocks.map((b) => b.top), container.scrollTop)
-    const current = blocks[pos.chapterIndex]
-    const pct = computePercent(current.index, pos.offset, current.height, chaptersRef.current.length)
+    const containerTop = container.getBoundingClientRect().top
+    const anchor = findAnchorBlock(blocks, containerTop)
+
+    // 当前章节内已加载的块数（用于章内比例，可能为 0，做兜底）
+    const currentBlocks =
+      nodesRef.current.get(anchor.chapterIndex)?.querySelectorAll(BLOCK_SELECTOR).length ?? 0
+    const withinRatio = currentBlocks > 0 ? anchor.blockIndex / currentBlocks : 0
+    const pct = computePercent(anchor.chapterIndex, chaptersRef.current.length, withinRatio)
     setPercent(pct)
 
     latestProgress.current = {
-      chapterIndex: current.index,
-      offset: pos.offset,
+      chapterIndex: anchor.chapterIndex,
+      blockIndex: anchor.blockIndex,
       percent: pct,
       updatedAt: Date.now(),
     }
     if (saveTimer.current) clearTimeout(saveTimer.current)
     saveTimer.current = setTimeout(flushProgress, 500)
+  }, [collectBlocks, flushProgress])
 
-    // 没有 IntersectionObserver 时（如测试环境）退回滚动位置判断
-    if (typeof IntersectionObserver === 'undefined') {
-      const last = blocks[blocks.length - 1]
-      if (container.scrollTop + container.clientHeight > last.top + last.height - 600) {
-        void loadChapter(last.index + 1)
-      }
-    }
-  }, [flushProgress, loadChapter])
-
-  // 滚到底部附近就加载下一章：靠哨兵元素观察，比算像素稳
+  // 滚到底部附近就加载下一章
   useEffect(() => {
     const sentinel = sentinelRef.current
     const container = containerRef.current

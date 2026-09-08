@@ -1,39 +1,99 @@
-// 进度计算：故意写成纯函数，不碰 DOM，这样能直接单测。
-// 阅读器里的实际测量（offsetTop / scrollTop）在组件里做完再喂进来。
+// 进度模型：用"段落序号"做锚点，不用绝对像素。
+//
+// 为什么是段落不是像素？
+// 真实样本《涛动周期论》单章最多 45 张图，全部加了 loading="lazy"。
+// 用户滚动时图片会陆续加载，把后面的内容一寸寸往下顶。
+// 同一个 scrollTop 刻度对应的内容可能前后两次完全不一样。
+// 存"第几个段落"则不受图片撑开的影响——只要那段还在 DOM 里，
+// 它的位置就是确定的，恢复时 scrollIntoView 即可。
+//
+// chapterIndex + blockIndex 共同锚定：
+// - chapterIndex：当前正在看的章节（spine 里的序号）
+// - blockIndex：该章节内"视口顶压着的那段"的块级元素下标
+// 两者一起就足够精确，不需要像素。
 
 export interface ReadingProgress {
   chapterIndex: number
-  /** 当前章节内的滚动偏移，单位 px */
-  offset: number
+  /** 当前章节内被视口顶部压着的那段块级元素的下标 */
+  blockIndex: number
+  /** 全书百分比（粗略显示用，0~100） */
   percent: number
   updatedAt: number
 }
 
 /**
- * 根据每章顶边位置和当前滚动位置，判断"人在哪一章、章内滚到哪"。
- * tops 按加载顺序给出（相对滚动容器）。
+ * 块级元素的"高度 + 顶边"快照。给一组块的视口坐标，告诉我视口顶压着哪一块。
+ * 通常由调用方遍历所有 chapter 内的 p/h1~h6/li/blockquote 得到。
  */
-export function locateCurrent(
-  tops: number[],
-  scrollTop: number,
-): { chapterIndex: number; offset: number } {
-  if (tops.length === 0) return { chapterIndex: 0, offset: 0 }
-  let index = 0
-  for (let i = 0; i < tops.length; i++) {
-    if (tops[i] <= scrollTop + 1) index = i
-    else break
-  }
-  return { chapterIndex: index, offset: Math.max(scrollTop - tops[index], 0) }
+export interface BlockRect {
+  top: number
+  bottom: number
+  /** 这个块属于第几章（spine 序号） */
+  chapterIndex: number
+  /** 这个块在该章内的下标 */
+  blockIndex: number
 }
 
-/** 章节内比例 + 章节序号 → 全书百分比，越界一律夹紧到 0~100 */
+/** 视口顶边（一般是 0，但留给调用方传其他值） */
+export function findAnchorBlock(
+  blocks: BlockRect[],
+  viewportTop: number,
+): { chapterIndex: number; blockIndex: number } {
+  if (blocks.length === 0) return { chapterIndex: 0, blockIndex: 0 }
+  // 找出"最后一个 top ≤ viewportTop + 1" 的块
+  // +1 是浮点容差，避免正好压在边界上时反复横跳
+  let result = blocks[0]
+  for (const block of blocks) {
+    if (block.top <= viewportTop + 1) result = block
+    else break
+  }
+  return { chapterIndex: result.chapterIndex, blockIndex: result.blockIndex }
+}
+
+/**
+ * 章节内块级元素按"视口坐标 → 全局块下标"映射，存为纯函数便于单测。
+ * chapterTops[i] = 第 i 章顶边相对滚动容器的像素值
+ * blocksInChapter[i] = 第 i 章内的块级元素数量
+ * scrollTop = 当前滚动位置
+ *
+ * 返回 (chapterIndex, blockIndex)
+ */
+export function locateFromTops(
+  chapterTops: number[],
+  blocksPerChapter: number[],
+  scrollTop: number,
+): { chapterIndex: number; blockIndex: number } {
+  if (chapterTops.length === 0) return { chapterIndex: 0, blockIndex: 0 }
+
+  // 先按章节顶边定位人在哪一章
+  let chapterIndex = 0
+  for (let i = 0; i < chapterTops.length; i++) {
+    if (chapterTops[i] <= scrollTop + 1) chapterIndex = i
+    else break
+  }
+
+  // 章内偏移，按"均匀"假设给个比例（粗略估计，真实块高不等）
+  const top = chapterTops[chapterIndex]
+  const nextTop = chapterTops[chapterIndex + 1] ?? Number.POSITIVE_INFINITY
+  const chapterHeight = nextTop - top
+  const offsetIntoChapter = Math.max(scrollTop - top, 0)
+  const total = blocksPerChapter[chapterIndex] ?? 0
+  if (total <= 0 || chapterHeight <= 0) {
+    return { chapterIndex, blockIndex: 0 }
+  }
+  const ratio = Math.min(offsetIntoChapter / chapterHeight, 0.9999)
+  return { chapterIndex, blockIndex: Math.floor(ratio * total) }
+}
+
+/** 章节序号 + 章内比例 → 全书百分比。 */
 export function computePercent(
   chapterIndex: number,
-  offset: number,
-  chapterHeight: number,
   totalChapters: number,
+  withinRatio: number,
 ): number {
   if (totalChapters <= 0) return 0
-  const ratio = chapterHeight > 0 ? Math.min(Math.max(offset / chapterHeight, 0), 1) : 0
-  return Math.min(Math.max(((chapterIndex + ratio) / totalChapters) * 100, 0), 100)
+  // 以"章"为粗粒度，章内再微调。这样即使未加载章节的块数未知，比例也是稳定的。
+  const chapterRatio = chapterIndex / totalChapters
+  const fine = Math.min(Math.max(withinRatio, 0), 1) / totalChapters
+  return Math.min(Math.max((chapterRatio + fine) * 100, 0), 100)
 }
