@@ -86,33 +86,43 @@ function collectTocLabels(epub: EpubFile): Map<string, string> {
 }
 
 /**
- * 封面兜底链（真实脏书实测得来）：
- * 1. getCoverImage() —— 很多书这里直接返回空串，哪怕 manifest 里明明有 cover.jpg
- * 2. 找封面页 xhtml，loadChapter 后抠第一个 <img src>
- *    —— 借 loadChapter 的资源替换能力拿到可用地址（Node 是文件路径，浏览器是 blob URL）
+ * 封面兜底链（真实脏书实测得来，多本书各暴露一个坑）：
+ *
+ * 关键认知：epub-parser 的 getCoverImage() 在 guide 里找 type="cover" 的引用，
+ * 但那个引用通常指向的是「封面页」(.xhtml/.html)，而不是「封面图」(.jpg/.jpeg)。
+ * 所以它的返回值常常是一个 html 文件路径/blob URL，绝不能直接当图片用。
+ *
+ * 正确做法：始终「加载封面页 → 抠里面的 img / image 标签 src」拿到真图。
+ * 借 loadChapter 的资源替换能力，抠出来的 src 就是可用地址（Node 是文件路径，浏览器是 blob URL）。
+ *
+ * 抠图正则要同时兼容：
+ *   - <img src="...">（《涛动周期论》《策略思维》）
+ *   - SVG <image xlink:href="...">（《认知世界的经济学》）
  */
 async function safeCover(epub: EpubFile): Promise<string | undefined> {
   try {
-    const cover = epub.getCoverImage()
-    if (cover) return cover
-  } catch {
-    // 脏 EPUB 常见：manifest 指向不存在的资源，不能因此打不开书
-  }
-
-  try {
     const manifest = epub.getManifest()
-    const coverPage = Object.values(manifest).find(
-      (item) =>
-        item.mediaType.includes('xhtml') &&
-        (item.properties?.includes('cover-image') || /cover/i.test(item.id)),
-    )
+
+    // 找封面页：优先 properties="cover-image"，其次 id/href 含 cover/titlepage 的 html
+    const coverPage = Object.entries(manifest).find(([, item]) => {
+      const isHtml = /(xhtml|html)/i.test(item.mediaType ?? '')
+      if (!isHtml) return false
+      const name = `${item.id} ${item.href ?? ''}`
+      return item.properties?.includes('cover-image') || /cover|titlepage/i.test(name)
+    })
     if (!coverPage) return undefined
+
     // 坑：manifest 里的 href 是裸路径，resolveHref 只认带 "epub:" 前缀的；
-    // 两样都试，最后退回直接用 manifest id（它本身就是合法的章节 id）
-    const resolved =
-      epub.resolveHref(coverPage.href) ?? epub.resolveHref(`epub:${coverPage.href}`)
-    const { html } = await epub.loadChapter(resolved?.id ?? coverPage.id)
-    return html.match(/<img[^>]+src="([^"]+)"/i)?.[1]
+    // 两样都试，最后退回直接用 manifest 的 id（它本身就是合法的章节 id）
+    const [chapterId, item] = coverPage
+    const resolved = epub.resolveHref(item.href) ?? epub.resolveHref(`epub:${item.href}`)
+    const { html } = await epub.loadChapter(resolved?.id ?? chapterId)
+
+    // 兼容 <img src> 与 SVG <image xlink:href> 两种写法
+    return (
+      html.match(/<img[^>]+src="([^"]+)"/i)?.[1] ??
+      html.match(/<image[^>]+(?:xlink:href|href)="([^"]+)"/i)?.[1]
+    )
   } catch {
     return undefined
   }
