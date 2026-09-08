@@ -25,3 +25,6 @@ npm-debug.log*
 # 本地环境与密钥
 .env
 .env.local
+
+# WorkBuddy 工作区数据（含项目记忆，不入库）
+.workbuddy/
