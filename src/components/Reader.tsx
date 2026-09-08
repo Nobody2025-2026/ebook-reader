@@ -489,7 +489,7 @@ export function Reader({ bookId, onExit }: Props) {
                       className={`settings-pill${settings.fontFamily === f ? ' active' : ''}`}
                       onClick={() => updateSettings({ fontFamily: f })}
                     >
-                      {f === 'serif' ? '衬线' : '无衬线'}
+                      {f === 'serif' ? '宋体' : '黑体'}
                     </button>
                   ))}
                 </div>
