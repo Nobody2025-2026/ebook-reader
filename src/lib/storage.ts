@@ -80,6 +80,16 @@ export async function clearProgress(id: string): Promise<void> {
   await del(KEY_PROGRESS + id)
 }
 
+/**
+ * 补封面：给早期导入、cover 为空的书补上封面。
+ * 只改 cover 字段，其余元数据原样保留（新增/删书都可能并发，做合并而非覆盖）。
+ */
+export async function updateBookCover(id: string, cover: string): Promise<void> {
+  const meta = await get<BookMeta>(KEY_META + id)
+  if (!meta) return
+  await set(KEY_META + id, { ...meta, cover })
+}
+
 /** 删书必须连带删进度，否则会留下孤儿记录 */
 export async function deleteBook(id: string): Promise<void> {
   await del(KEY_META + id)
