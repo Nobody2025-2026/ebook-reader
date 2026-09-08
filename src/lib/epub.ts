@@ -1,6 +1,7 @@
 // EPUB 解析层：封装 @lingo-reader/epub-parser，对上层只暴露"书"的概念。
 // 浏览器传 File，Node 传文件路径——同一套 API，为后期套 Tauri 留口。
 import { initEpubFile, type EpubFile } from '@lingo-reader/epub-parser'
+import { computeChapterTextLengths } from './weights'
 
 export interface BookMeta {
   title: string
@@ -22,6 +23,8 @@ export interface ChapterContent {
 export interface OpenedBook {
   meta: BookMeta
   chapters: ChapterRef[]
+  /** 每章纯文字数，用于字数加权的阅读百分比（见 weights.ts 顶部注释） */
+  chapterWeights: number[]
   loadChapter(id: string): Promise<ChapterContent>
   resolveHref(href: string): { id: string; selector: string } | undefined
   destroy(): void
@@ -98,6 +101,18 @@ export interface OpenEpubOptions {
   resourceSaveDir?: string
 }
 
+/**
+ * 读取输入的原始字节：浏览器 File 走 arrayBuffer，Node 路径走 fs。
+ * 动态 import node:fs 是为了浏览器 bundle 不被打进 Node 内置模块。
+ */
+async function readInputBytes(input: File | string): Promise<Uint8Array> {
+  if (typeof input === 'string') {
+    const { readFile } = await import('node:fs/promises')
+    return new Uint8Array(await readFile(input))
+  }
+  return new Uint8Array(await input.arrayBuffer())
+}
+
 export async function openEpub(
   input: File | string,
   options: OpenEpubOptions = {},
@@ -105,11 +120,18 @@ export async function openEpub(
   const epub = await initEpubFile(input as unknown as string, options.resourceSaveDir)
   const metadata = epub.getMetadata()
   const labels = collectTocLabels(epub)
+  const spine = epub.getSpine()
 
-  const chapters: ChapterRef[] = epub.getSpine().map((item, index) => ({
+  const chapters: ChapterRef[] = spine.map((item, index) => ({
     id: item.id,
     label: labels.get(item.id) ?? `第 ${index + 1} 章`,
   }))
+
+  // 字数权重：只解 zip 里的 xhtml 数字，不碰图片，比逐章 loadChapter 便宜得多
+  const chapterWeights = computeChapterTextLengths(
+    await readInputBytes(input),
+    spine.map((item) => item.href),
+  )
 
   return {
     meta: {
@@ -119,6 +141,7 @@ export async function openEpub(
       cover: await safeCover(epub),
     },
     chapters,
+    chapterWeights,
     async loadChapter(id: string) {
       const { html, css } = await epub.loadChapter(id)
       return { html, css: css ?? [] }

@@ -97,3 +97,30 @@ export function computePercent(
   const fine = Math.min(Math.max(withinRatio, 0), 1) / totalChapters
   return Math.min(Math.max((chapterRatio + fine) * 100, 0), 100)
 }
+
+/**
+ * 按字数加权的全书百分比。
+ *
+ * 为什么需要它：转换版 EPUB 常把全书塞进一个 spine 项
+ * （《策略思维》spine 仅 4 项，第 2 项独占 25 万字），
+ * 按"章号/总章数"平摊会让目录页直接显示 50%。
+ * 按各章纯文字长度加权后，同一位置约为 0.5%，且章内能平滑爬升。
+ *
+ * weights[i] = 第 i 章的纯文字数（0 表示空章/未数到）。
+ * 权重全 0（解压失败等极端情况）时退化为按章等权，保证总有合理输出。
+ */
+export function computeWeightedPercent(
+  chapterIndex: number,
+  withinRatio: number,
+  weights: number[],
+): number {
+  const total = weights.reduce((sum, w) => sum + w, 0)
+  if (weights.length === 0) return 0
+  if (total <= 0) return computePercent(chapterIndex, weights.length, withinRatio)
+
+  const idx = Math.min(Math.max(chapterIndex, 0), weights.length - 1)
+  let before = 0
+  for (let i = 0; i < idx; i++) before += weights[i]
+  const within = weights[idx] * Math.min(Math.max(withinRatio, 0), 1)
+  return Math.min(Math.max(((before + within) / total) * 100, 0), 100)
+}

@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@lingo-reader/epub-parser": "^0.4.6",
+    "fflate": "^0.8.3",
     "idb-keyval": "^6.3.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
@@ -25,7 +26,6 @@
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.7",
     "@vitejs/plugin-react": "^6.1.1",
-    "fflate": "^0.8.3",
     "jsdom": "^30.0.1",
     "typescript": "^7.0.2",
     "vite": "^8.2.2",

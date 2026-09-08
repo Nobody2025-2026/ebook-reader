@@ -37,4 +37,13 @@ describe('openEpub', () => {
     expect(first.html).toContain('这是第一章的正文')
     expect(first.css.length).toBeGreaterThan(0)
   })
+
+  it('算出每章的纯文字权重', () => {
+    expect(book.chapterWeights).toHaveLength(2)
+    // 不逐字断言（fixture 改了不用跟着改），但必须有字；
+    // 样本第一章有两段正文，明显比只有一段的第二章长
+    expect(book.chapterWeights[0]).toBeGreaterThan(0)
+    expect(book.chapterWeights[1]).toBeGreaterThan(0)
+    expect(book.chapterWeights[0]).toBeGreaterThan(book.chapterWeights[1])
+  })
 })

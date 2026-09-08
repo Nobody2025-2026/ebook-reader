@@ -26,6 +26,8 @@ const { openEpubMock, mockBook } = vi.hoisted(() => {
       { id: 'c2', label: '第二章' },
       { id: 'c3', label: '第三章' },
     ],
+    // 字数权重：阅读器算百分比要用，缺了会在滚动时炸 TypeError
+    chapterWeights: [10, 10, 10],
     loadChapter: async (id: string) => ({ html: `<p>${id} 的正文</p>`, css: [] }),
     resolveHref: () => undefined,
     destroy: vi.fn(),

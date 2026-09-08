@@ -2,7 +2,7 @@
 // 纯函数测试：不碰 DOM，跑得最快，优先把可测的逻辑都放这儿
 import { describe, expect, it } from 'vitest'
 import { lazyLoadImages, prepareChapterHtml, sanitizeChapterHtml } from '../src/lib/sanitize'
-import { computePercent, findAnchorBlock } from '../src/lib/progress'
+import { computePercent, computeWeightedPercent, findAnchorBlock } from '../src/lib/progress'
 import { parseHash } from '../src/lib/router'
 
 describe('sanitizeChapterHtml', () => {
@@ -108,6 +108,42 @@ describe('computePercent', () => {
   it('结果永远夹在 0~100 之间', () => {
     expect(computePercent(99, 100, 0.5)).toBeCloseTo(99.5, 1)
     expect(computePercent(0, 1, 0)).toBe(0)
+  })
+})
+
+describe('computeWeightedPercent', () => {
+  // 真实样本《策略思维》的权重分布：封面 0 字，引言 1361 字，
+  // 第 2 章独占 250637 字（全书塞一个 spine 项），附录 13113 字
+  const strategyBook = [0, 1361, 250637, 13113]
+
+  it('按字数加权，不再按章平摊', () => {
+    // 站在第 2 章（全书正文）开头：旧算法给 50%，加权后只有约 0.5%
+    expect(computeWeightedPercent(2, 0, strategyBook)).toBeCloseTo(0.51, 1)
+    // 第 2 章读到一半：(1361 + 250637/2) / 265111 ≈ 47.8%
+    expect(computeWeightedPercent(2, 0.5, strategyBook)).toBeCloseTo(47.8, 0)
+    // 第 2 章读完 ≈ 95%
+    expect(computeWeightedPercent(2, 1, strategyBook)).toBeCloseTo(95.5, 0)
+  })
+
+  it('均匀分布时与按章算法一致', () => {
+    const even = [100, 100, 100, 100]
+    expect(computeWeightedPercent(2, 0, even)).toBe(50)
+    expect(computeWeightedPercent(1, 0.5, even)).toBeCloseTo(37.5, 5)
+  })
+
+  it('权重全 0 时退化为按章等权，不会永远显示 0%', () => {
+    expect(computeWeightedPercent(1, 0, [0, 0, 0, 0])).toBe(25)
+  })
+
+  it('空权重与越界序号安全处理', () => {
+    expect(computeWeightedPercent(0, 0.5, [])).toBe(0)
+    expect(computeWeightedPercent(999, 0, strategyBook)).toBeCloseTo(95.5, 0)
+    expect(computeWeightedPercent(-1, 0, strategyBook)).toBe(0)
+  })
+
+  it('章内比例被夹到 0~1，结果夹在 0~100', () => {
+    expect(computeWeightedPercent(3, 2, strategyBook)).toBe(100)
+    expect(computeWeightedPercent(0, -1, strategyBook)).toBe(0)
   })
 })
 

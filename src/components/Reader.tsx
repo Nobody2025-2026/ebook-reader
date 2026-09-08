@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { openEpub, type ChapterRef, type OpenedBook } from '../lib/epub'
 import {
-  computePercent,
+  computeWeightedPercent,
   findAnchorBlock,
   type BlockRect,
   type ReadingProgress,
@@ -33,6 +33,7 @@ export function Reader({ bookId, onExit }: Props) {
 
   const bookRef = useRef<OpenedBook | null>(null)
   const chaptersRef = useRef<ChapterRef[]>([])
+  const weightsRef = useRef<number[]>([])
   const containerRef = useRef<HTMLDivElement | null>(null)
   const nodesRef = useRef(new Map<number, HTMLElement>())
   const loadedIdxRef = useRef(new Set<number>())
@@ -85,6 +86,7 @@ export function Reader({ bookId, onExit }: Props) {
         }
         bookRef.current = book
         chaptersRef.current = book.chapters
+        weightsRef.current = book.chapterWeights
         setTitle(book.meta.title)
 
         const start = Math.min(Math.max(progress?.chapterIndex ?? 0, 0), book.chapters.length - 1)
@@ -177,7 +179,7 @@ export function Reader({ bookId, onExit }: Props) {
     const currentBlocks =
       nodesRef.current.get(anchor.chapterIndex)?.querySelectorAll(BLOCK_SELECTOR).length ?? 0
     const withinRatio = currentBlocks > 0 ? anchor.blockIndex / currentBlocks : 0
-    const pct = computePercent(anchor.chapterIndex, chaptersRef.current.length, withinRatio)
+    const pct = computeWeightedPercent(anchor.chapterIndex, withinRatio, weightsRef.current)
     setPercent(pct)
 
     latestProgress.current = {
