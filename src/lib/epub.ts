@@ -20,14 +20,53 @@ export interface ChapterContent {
   css: { id: string; href: string }[]
 }
 
+/** 目录条目：label 显示名，chapterIndex 指向 spine 序号，selector 是章内锚点 */
+export interface TocEntry {
+  label: string
+  chapterIndex: number
+  /** 章内锚点（CSS 选择器，如 `[id="sigil_toc_id_1"]`），空则跳到章节开头 */
+  selector?: string
+  children?: TocEntry[]
+}
+
 export interface OpenedBook {
   meta: BookMeta
   chapters: ChapterRef[]
   /** 每章纯文字数，用于字数加权的阅读百分比（见 weights.ts 顶部注释） */
   chapterWeights: number[]
+  /** 目录树（已把 href 解析成 chapterIndex + selector），无目录时为空数组 */
+  toc: TocEntry[]
   loadChapter(id: string): Promise<ChapterContent>
   resolveHref(href: string): { id: string; selector: string } | undefined
   destroy(): void
+}
+
+/**
+ * 把解析器的 TOC 树转换成「chapterIndex + selector」的扁平可跳转结构。
+ * spine id → 序号的映射先建好，遍历 TOC 时反查。
+ * 解析不出章节的条目（脏书常见）直接丢弃，绝不因为一条坏目录让整本书打不开。
+ */
+function collectToc(epub: EpubFile, idToIndex: Map<string, number>): TocEntry[] {
+  const walk = (nodes: ReturnType<EpubFile['getToc']>): TocEntry[] => {
+    const out: TocEntry[] = []
+    for (const node of nodes) {
+      const resolved = epub.resolveHref(node.href)
+      const chapterIndex = resolved ? idToIndex.get(resolved.id) : undefined
+      if (chapterIndex === undefined) continue
+      const entry: TocEntry = {
+        label: node.label,
+        chapterIndex,
+        selector: resolved?.selector,
+      }
+      if (node.children?.length) {
+        const children = walk(node.children)
+        if (children.length) entry.children = children
+      }
+      out.push(entry)
+    }
+    return out
+  }
+  return walk(epub.getToc())
 }
 
 /** 目录可能有层级，摊平后按 href 反查章节 id，用来给 spine 补标题 */
@@ -127,6 +166,8 @@ export async function openEpub(
     label: labels.get(item.id) ?? `第 ${index + 1} 章`,
   }))
 
+  const idToIndex = new Map(spine.map((item, index) => [item.id, index]))
+
   // 字数权重：只解 zip 里的 xhtml 数字，不碰图片，比逐章 loadChapter 便宜得多
   const chapterWeights = computeChapterTextLengths(
     await readInputBytes(input),
@@ -142,6 +183,7 @@ export async function openEpub(
     },
     chapters,
     chapterWeights,
+    toc: collectToc(epub, idToIndex),
     async loadChapter(id: string) {
       const { html, css } = await epub.loadChapter(id)
       return { html, css: css ?? [] }

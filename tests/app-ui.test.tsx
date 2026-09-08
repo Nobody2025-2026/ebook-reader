@@ -28,6 +28,12 @@ const { openEpubMock, mockBook } = vi.hoisted(() => {
     ],
     // 字数权重：阅读器算百分比要用，缺了会在滚动时炸 TypeError
     chapterWeights: [10, 10, 10],
+    // 目录树：阅读器渲染目录抽屉用
+    toc: [
+      { label: '第一章', chapterIndex: 0 },
+      { label: '第二章', chapterIndex: 1 },
+      { label: '第三章', chapterIndex: 2 },
+    ],
     loadChapter: async (id: string) => ({ html: `<p>${id} 的正文</p>`, css: [] }),
     resolveHref: () => undefined,
     destroy: vi.fn(),
@@ -153,6 +159,20 @@ describe('阅读器', () => {
     await screen.findByText('c1 的正文')
     fireEvent.keyDown(window, { key: 'Escape' })
     expect(onExit).toHaveBeenCalled()
+  })
+
+  it('打开目录抽屉并点击跳转章节', async () => {
+    await saveBook(meta, new File(['a'], 'book.epub'))
+    render(<Reader bookId="b1" onExit={vi.fn()} />)
+    await screen.findByText('c1 的正文')
+
+    // 点目录按钮，抽屉出现并列出章节
+    fireEvent.click(screen.getByRole('button', { name: '目录' }))
+    expect(await screen.findByText('第一章')).toBeInTheDocument()
+
+    // 点「第三章」跳转，等目标章节异步加载渲染
+    fireEvent.click(screen.getByRole('button', { name: '第三章' }))
+    await waitFor(() => expect(screen.getByText('c3 的正文')).toBeInTheDocument())
   })
 })
 

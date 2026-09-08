@@ -46,4 +46,11 @@ describe('openEpub', () => {
     expect(book.chapterWeights[1]).toBeGreaterThan(0)
     expect(book.chapterWeights[0]).toBeGreaterThan(book.chapterWeights[1])
   })
+
+  it('解析出可跳转的目录树（chapterIndex + selector）', () => {
+    expect(book.toc).toHaveLength(2)
+    expect(book.toc.map((t) => t.label)).toEqual(['第一章 开场', '第二章 收尾'])
+    expect(book.toc[0].chapterIndex).toBe(0)
+    expect(book.toc[1].chapterIndex).toBe(1)
+  })
 })

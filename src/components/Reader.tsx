@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { openEpub, type ChapterRef, type OpenedBook } from '../lib/epub'
+import { openEpub, type ChapterRef, type OpenedBook, type TocEntry } from '../lib/epub'
 import {
   computeWeightedPercent,
   findAnchorBlock,
@@ -30,6 +30,9 @@ export function Reader({ bookId, onExit }: Props) {
   const [title, setTitle] = useState('')
   const [loaded, setLoaded] = useState<LoadedChapter[]>([])
   const [percent, setPercent] = useState(0)
+  const [toc, setToc] = useState<TocEntry[]>([])
+  const [tocOpen, setTocOpen] = useState(false)
+  const [currentChapter, setCurrentChapter] = useState(0)
 
   const bookRef = useRef<OpenedBook | null>(null)
   const chaptersRef = useRef<ChapterRef[]>([])
@@ -40,6 +43,8 @@ export function Reader({ bookId, onExit }: Props) {
   const loadingRef = useRef(false)
   // 待恢复的进度：chapter + block 双重定位。delta 不存（懒加载图片会让像素位置飘）。
   const pendingRestore = useRef<{ chapterIndex: number; blockIndex: number } | null>(null)
+  // 目录点击要跳转的章内锚点选择器（空 = 跳章开头）
+  const pendingJump = useRef<{ chapterIndex: number; selector?: string } | null>(null)
   // 是否已经尝试过恢复——避免后续懒加载新章节时把读者强行拽回去
   const hasRestoredRef = useRef(false)
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -87,9 +92,11 @@ export function Reader({ bookId, onExit }: Props) {
         bookRef.current = book
         chaptersRef.current = book.chapters
         weightsRef.current = book.chapterWeights
+        setToc(book.toc)
         setTitle(book.meta.title)
 
         const start = Math.min(Math.max(progress?.chapterIndex ?? 0, 0), book.chapters.length - 1)
+        setCurrentChapter(start)
         if (progress) {
           pendingRestore.current = {
             chapterIndex: start,
@@ -181,6 +188,7 @@ export function Reader({ bookId, onExit }: Props) {
     const withinRatio = currentBlocks > 0 ? anchor.blockIndex / currentBlocks : 0
     const pct = computeWeightedPercent(anchor.chapterIndex, withinRatio, weightsRef.current)
     setPercent(pct)
+    setCurrentChapter(anchor.chapterIndex)
 
     latestProgress.current = {
       chapterIndex: anchor.chapterIndex,
@@ -191,6 +199,65 @@ export function Reader({ bookId, onExit }: Props) {
     if (saveTimer.current) clearTimeout(saveTimer.current)
     saveTimer.current = setTimeout(flushProgress, 500)
   }, [collectBlocks, flushProgress])
+
+  // 目录跳转：标记目标，加载目标章（若未加载），定位滚动统一由下方 effect 处理
+  const jumpTo = useCallback(
+    async (chapterIndex: number, selector?: string) => {
+      pendingJump.current = { chapterIndex, selector }
+      if (!loadedIdxRef.current.has(chapterIndex)) {
+        await loadChapter(chapterIndex)
+      }
+      // 数据已加载时，DOM 可能尚未挂载（React 异步重渲染）。
+      // 尝试手动滚一次；滚成功就收尾，否则把 pendingJump 留给 effect。
+      const chapterEl = nodesRef.current.get(chapterIndex)
+      const target = selector
+        ? (chapterEl?.querySelector(selector) as HTMLElement | null)
+        : null
+      const el = target ?? chapterEl
+      if (el && typeof el.scrollIntoView === 'function') {
+        el.scrollIntoView({ block: 'start', behavior: 'auto' })
+        pendingJump.current = null
+        setTocOpen(false)
+      }
+      // 没滚成（DOM 未挂载 / 锚点未渲染）：pendingJump 保留，等 effect 在 loaded 变化后滚动
+    },
+    [loadChapter],
+  )
+
+  // 加载完新章节后，若有待处理的目录跳转锚点，滚过去（锚点未就绪则重试）
+  useEffect(() => {
+    if (!pendingJump.current) return
+    const target = pendingJump.current
+    const tryScroll = (): boolean => {
+      const chapterEl = nodesRef.current.get(target.chapterIndex)
+      if (!chapterEl) return false
+      const anchor = target.selector
+        ? (chapterEl.querySelector(target.selector) as HTMLElement | null)
+        : null
+      if (!anchor && target.selector) return false // 锚点元素还没渲染出来
+      const el = anchor ?? chapterEl
+      // jsdom 没实现 scrollIntoView，真实浏览器才有；测试里跳过即可
+      if (typeof el.scrollIntoView === 'function') {
+        el.scrollIntoView({ block: 'start', behavior: 'auto' })
+      }
+      return true
+    }
+    if (tryScroll()) {
+      pendingJump.current = null
+      setTocOpen(false)
+      return
+    }
+    // 大章（如 25 万字）渲染慢，重试几轮直到锚点就绪
+    const timers = [0, 80, 250, 700, 1800].map((delay) =>
+      setTimeout(() => {
+        if (pendingJump.current && tryScroll()) {
+          pendingJump.current = null
+          setTocOpen(false)
+        }
+      }, delay),
+    )
+    return () => timers.forEach(clearTimeout)
+  }, [loaded])
 
   // 滚到底部附近就加载下一章
   useEffect(() => {
@@ -249,30 +316,102 @@ export function Reader({ bookId, onExit }: Props) {
           ← 书库
         </button>
         <span className="reader-title">{title}</span>
+        <button
+          className="btn btn-ghost"
+          onClick={() => setTocOpen((v) => !v)}
+          title="目录"
+          disabled={toc.length === 0}
+        >
+          目录
+        </button>
         <span className="reader-percent">{percent.toFixed(1)}%</span>
       </header>
 
-      <div className="reader-scroll" ref={containerRef} onScroll={handleScroll}>
-        {loaded.map((chapter) => (
-          <article
-            key={chapter.index}
-            className="chapter"
-            data-chapter-index={chapter.index}
-            ref={(el) => {
-              if (el) nodesRef.current.set(chapter.index, el)
-              else nodesRef.current.delete(chapter.index)
-            }}
-          >
-            {chapter.css.map((sheet) => (
-              <link key={sheet.id} rel="stylesheet" href={sheet.href} />
-            ))}
-            <div dangerouslySetInnerHTML={{ __html: chapter.html }} />
-          </article>
-        ))}
-        <div ref={sentinelRef} className="chapter-sentinel">
-          加载下一章…
+      <div className="reader-body">
+        <div className="reader-scroll" ref={containerRef} onScroll={handleScroll}>
+          {loaded.map((chapter) => (
+            <article
+              key={chapter.index}
+              className="chapter"
+              data-chapter-index={chapter.index}
+              ref={(el) => {
+                if (el) nodesRef.current.set(chapter.index, el)
+                else nodesRef.current.delete(chapter.index)
+              }}
+            >
+              {chapter.css.map((sheet) => (
+                <link key={sheet.id} rel="stylesheet" href={sheet.href} />
+              ))}
+              <div dangerouslySetInnerHTML={{ __html: chapter.html }} />
+            </article>
+          ))}
+          <div ref={sentinelRef} className="chapter-sentinel">
+            加载下一章…
+          </div>
         </div>
+
+        {tocOpen && (
+          <aside className="toc-panel">
+            <div className="toc-header">
+              <span>目录</span>
+              <button
+                className="btn btn-ghost"
+                onClick={() => setTocOpen(false)}
+                title="关闭目录"
+              >
+                ×
+              </button>
+            </div>
+            <nav className="toc-list">
+              {toc.map((entry, i) => (
+                <TocNode
+                  key={i}
+                  entry={entry}
+                  depth={0}
+                  currentChapter={currentChapter}
+                  onJump={jumpTo}
+                />
+              ))}
+            </nav>
+          </aside>
+        )}
       </div>
     </div>
+  )
+}
+
+/** 递归渲染目录条目 */
+function TocNode({
+  entry,
+  depth,
+  currentChapter,
+  onJump,
+}: {
+  entry: TocEntry
+  depth: number
+  currentChapter: number
+  onJump: (chapterIndex: number, selector?: string) => void
+}) {
+  const active = entry.chapterIndex === currentChapter && !entry.children?.length
+  return (
+    <>
+      <button
+        className={`toc-item${active ? ' toc-active' : ''}`}
+        style={{ paddingLeft: 12 + depth * 16 }}
+        onClick={() => onJump(entry.chapterIndex, entry.selector)}
+        title={entry.label}
+      >
+        {entry.label}
+      </button>
+      {entry.children?.map((child, i) => (
+        <TocNode
+          key={i}
+          entry={child}
+          depth={depth + 1}
+          currentChapter={currentChapter}
+          onJump={onJump}
+        />
+      ))}
+    </>
   )
 }
