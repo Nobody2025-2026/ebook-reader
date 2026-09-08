@@ -4,6 +4,29 @@ import { describe, expect, it } from 'vitest'
 import { lazyLoadImages, prepareChapterHtml, sanitizeChapterHtml } from '../src/lib/sanitize'
 import { computePercent, computeWeightedPercent, findAnchorBlock } from '../src/lib/progress'
 import { parseHash } from '../src/lib/router'
+import { isValidCoverDataUrl } from '../src/lib/cover'
+
+describe('isValidCoverDataUrl', () => {
+  it('拒绝空串 / undefined / null', () => {
+    expect(isValidCoverDataUrl(undefined)).toBe(false)
+    expect(isValidCoverDataUrl(null)).toBe(false)
+    expect(isValidCoverDataUrl('')).toBe(false)
+  })
+
+  it('拒绝只有前缀、没有 base64 数据的废串（早期 bug 产物）', () => {
+    expect(isValidCoverDataUrl('data:application/octet-stream;base64,')).toBe(false)
+    expect(isValidCoverDataUrl('data:image/jpeg;base64,')).toBe(false)
+  })
+
+  it('拒绝非 image 的 data URL', () => {
+    expect(isValidCoverDataUrl('data:text/html;base64,PHN2Zz4=')).toBe(false)
+  })
+
+  it('接受合法的图片 data URL', () => {
+    const base64 = 'x'.repeat(500)
+    expect(isValidCoverDataUrl('data:image/jpeg;base64,' + base64)).toBe(true)
+  })
+})
 
 describe('sanitizeChapterHtml', () => {
   it('去掉 script 标签', () => {

@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { webBookSource } from '../lib/bookSource'
+import { isValidCoverDataUrl } from '../lib/cover'
 import type { ReadingProgress } from '../lib/progress'
 import type { BookMeta } from '../lib/storage'
 
@@ -71,7 +72,7 @@ export function Library({ books, importing, importHint, onImport, onOpen, onRest
                   }}
                 >
                   <div className="book-cover">
-                    {book.cover ? <img src={book.cover} alt="" loading="lazy" /> : <span className="cover-fallback">{(book.title || '?').slice(0, 1)}</span>}
+                    {isValidCoverDataUrl(book.cover) ? <img src={book.cover} alt="" loading="lazy" /> : <span className="cover-fallback">{(book.title || '?').slice(0, 1)}</span>}
                   </div>
                   <div className="book-info">
                     <span className="book-title">{book.title}</span>

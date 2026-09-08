@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>书库诊断 & 修封面</title>
+    <style>
+      body { font-family: -apple-system, sans-serif; padding: 24px; max-width: 900px; margin: 0 auto; }
+      h1 { font-size: 20px; }
+      .origin { font-size: 13px; color: #666; word-break: break-all; background: #f5f5f5; padding: 8px 12px; border-radius: 6px; }
+      .card { border: 1px solid #ddd; border-radius: 8px; padding: 12px; margin: 12px 0; }
+      .muted { color: #999; font-size: 13px; }
+      table { border-collapse: collapse; width: 100%; margin-top: 12px; }
+      th, td { border: 1px solid #ddd; padding: 6px 10px; font-size: 13px; text-align: left; word-break: break-all; }
+      th { background: #fafafa; }
+      button { margin-top: 12px; padding: 8px 16px; font-size: 14px; cursor: pointer; }
+      button:disabled { opacity: 0.5; cursor: not-allowed; }
+      textarea { width: 100%; height: 200px; margin-top: 12px; font-size: 12px; font-family: monospace; }
+      .ok { color: #0a7d28; font-weight: bold; }
+      .bad { color: #c33; font-weight: bold; }
+    </style>
+  </head>
+  <body>
+    <h1>书库诊断 & 修封面</h1>
+    <p class="origin">Origin：<span id="origin"></span></p>
+    <div id="result" class="muted">正在读取…</div>
+    <button id="fixBtn">🔧 修封面：扫描所有书，cover 失效或缺失的重新补</button>
+    <button id="exportBtn">导出诊断数据</button>
+    <textarea id="dump" placeholder="诊断 / 修复日志会显示在这里"></textarea>
+
+    <script>
+      // 独立页面没走 index.html 的 polyfill，解析库依赖 process.nextTick/cwd，
+      // 不补这段，浏览器端 import 解析库就会报 "process is not defined"。
+      if (!window.process) {
+        window.process = {
+          nextTick: function (fn) { setTimeout(fn, 0) },
+          cwd: function () { return '/' },
+          env: {},
+          version: '',
+          platform: 'browser',
+        }
+      }
+
+      document.getElementById('origin').textContent = location.origin
+
+      function openDb() {
+        return new Promise((resolve, reject) => {
+          const req = indexedDB.open('keyval-store')
+          req.onerror = () => reject(req.error)
+          req.onupgradeneeded = () => req.result.createObjectStore('keyval')
+          req.onsuccess = () => resolve(req.result)
+        })
+      }
+
+      function txStore(db, mode) {
+        return db.transaction('keyval', mode).objectStore('keyval')
+      }
+
+      function promisify(req) {
+        return new Promise((resolve, reject) => {
+          req.onsuccess = () => resolve(req.result)
+          req.onerror = () => reject(req.error)
+        })
+      }
+
+      async function dbGetAll() {
+        const db = await openDb()
+        const store = txStore(db, 'readonly')
+        return {
+          keys: await promisify(store.getAllKeys()),
+          vals: await promisify(store.getAll()),
+        }
+      }
+
+      async function dbSet(key, value) {
+        const db = await openDb()
+        const store = txStore(db, 'readwrite')
+        return promisify(store.put(value, key))
+      }
+
+      // 检测 cover 是不是合法 data URL
+      function isValidCover(s) {
+        if (!s || typeof s !== 'string') return false
+        if (!s.startsWith('data:image/')) return false
+        const base64 = s.split(',')[1] || ''
+        // 合法 data URL 至少要有几十字符的 base64（封面图通常 > 1KB）
+        return base64.length > 200
+      }
+
+      // 把任意字符串压缩成 60 字以内
+      function preview(s) {
+        if (!s) return '（空）'
+        if (s.length <= 60) return s
+        return s.slice(0, 60) + '…（共 ' + s.length + ' 字）'
+      }
+
+      async function render() {
+        const { keys, vals } = await dbGetAll()
+        const metas = vals.filter((v) => v && v.id && v.title)
+        const fileKeys = keys.filter((k) => typeof k === 'string' && k.startsWith('file:'))
+        const metaKeys = keys.filter((k) => typeof k === 'string' && k.startsWith('meta:'))
+
+        let html = '<div class="card"><strong>keyval-store</strong>：共 ' + keys.length + ' 个键（meta:' + metas.length + ', file:' + fileKeys.length + '）</div>'
+        html += '<table><tr><th>书名</th><th>cover 字段</th><th>是否合法</th><th>书文件</th></tr>'
+        metas.forEach((m) => {
+          const hasFile = fileKeys.includes('file:' + m.id)
+          const coverRaw = m.cover || ''
+          const coverPreview = preview(coverRaw)
+          const valid = isValidCover(coverRaw)
+          html += '<tr><td>' + m.title + '</td><td><code>' + coverPreview + '</code></td><td>' + (valid ? '<span class="ok">✓ 合法</span>' : '<span class="bad">✗ 失效/缺失</span>') + '</td><td>' + (hasFile ? '有' : '<span class="bad">⚠️ 缺失</span>') + '</td></tr>'
+        })
+        html += '</table>'
+
+        document.getElementById('result').innerHTML = html
+
+        const dump = {
+          origin: location.origin,
+          metaCount: metas.length,
+          fileCount: fileKeys.length,
+          books: metas.map((m) => ({
+            id: m.id, title: m.title, fileName: m.fileName,
+            coverRaw: m.cover, coverLen: (m.cover || '').length,
+            coverValid: isValidCover(m.cover),
+            hasFile: fileKeys.includes('file:' + m.id),
+          })),
+        }
+        document.getElementById('dump').value = JSON.stringify(dump, null, 2)
+        return dump
+      }
+
+      async function getFile(key) {
+        const db = await openDb()
+        const store = txStore(db, 'readonly')
+        return promisify(store.get(key))
+      }
+
+      // 修封面：把书文件解析出封面图，转成 data URL 存回 meta
+      async function fixCovers() {
+        const log = []
+        const dump = await render()
+        const fixBtn = document.getElementById('fixBtn')
+        fixBtn.disabled = true
+        fixBtn.textContent = '🔧 修复中…'
+
+        for (const book of dump.books) {
+          log.push('--- 处理：' + book.title + ' ---')
+          if (book.coverValid) {
+            log.push('  ⏭ 跳过：cover 合法（' + book.coverLen + ' 字符）')
+            continue
+          }
+          if (!book.hasFile) {
+            log.push('  ✗ 跳过：书文件缺失，无法重新解析')
+            continue
+          }
+          try {
+            const buf = await getFile('file:' + book.id)
+            if (!buf) { log.push('  ✗ 跳过：书文件读出来是空的'); continue }
+            const file = new File([buf], book.fileName, { type: 'application/epub+zip' })
+            log.push('  → 正在解析 EPUB（' + (buf.byteLength / 1024 / 1024).toFixed(1) + ' MB）…')
+            // 动态 import 解析库
+            const mod = await import('/node_modules/.vite/deps/@lingo-reader_epub-parser.js')
+              .catch(() => import('/@fs/Users/shaun_1/WorkBuddy/自制阅读器/node_modules/@lingo-reader/epub-parser/dist/index.js'))
+            const saveDir = '/tmp/reader-fix-' + Date.now() + '/'
+            // 浏览器没 fs，没法落盘；传 undefined 让解析库用 blob
+            const epub = await mod.initEpubFile(file)
+            let coverSrc = ''
+            try { coverSrc = epub.getCoverImage() || '' } catch (e) { log.push('  → getCoverImage() 抛错：' + e.message) }
+            if (!coverSrc) {
+              // 兜底：找封面页抠 <img>
+              try {
+                const manifest = epub.getManifest()
+                const coverPage = Object.values(manifest).find((it) => it.mediaType.includes('xhtml') && (it.properties?.includes('cover-image') || /cover/i.test(it.id)))
+                if (coverPage) {
+                  const resolved = epub.resolveHref(coverPage.href) || epub.resolveHref('epub:' + coverPage.href)
+                  const { html } = await epub.loadChapter(resolved?.id || coverPage.id)
+                  coverSrc = html.match(/<img[^>]+src="([^"]+)"/i)?.[1] || ''
+                }
+              } catch (e) { log.push('  → 兜底解析封面页失败：' + e.message) }
+            }
+            epub.destroy()
+            if (!coverSrc) {
+              log.push('  ✗ 这本书确实没有封面图，跳过')
+              continue
+            }
+            log.push('  → 拿到封面 src（' + coverSrc.slice(0, 60) + '）')
+            // 转 data URL
+            const resp = await fetch(coverSrc)
+            const blob = await resp.blob()
+            const dataUrl = await new Promise((resolve, reject) => {
+              const reader = new FileReader()
+              reader.onload = () => resolve(String(reader.result))
+              reader.onerror = () => reject(reader.error)
+              reader.readAsDataURL(blob)
+            })
+            log.push('  → data URL 已生成（' + dataUrl.length + ' 字符）')
+            // 写回 meta
+            const newMeta = { ...book, cover: dataUrl }
+            await dbSet('meta:' + book.id, newMeta)
+            log.push('  ✓ 封面已修复并写回 IndexedDB')
+          } catch (e) {
+            log.push('  ✗ 失败：' + e.message)
+          }
+        }
+
+        document.getElementById('dump').value += '\n\n--- 修复日志 ---\n' + log.join('\n')
+        fixBtn.disabled = false
+        fixBtn.textContent = '🔧 修封面'
+        await render()
+        alert('修复完成。点确定后会自动刷新表格。请回书库页（localhost:5174）刷新查看封面是否出现。')
+      }
+
+      render().catch((e) => {
+        document.getElementById('result').innerHTML = '<div class="card">读取失败：' + String(e) + '</div>'
+      })
+
+      document.getElementById('fixBtn').addEventListener('click', () => {
+        if (confirm('将扫描所有书，对 cover 失效或缺失的重新解析补封面（每本 70MB 大书需 2-5 秒）。继续？')) {
+          fixCovers()
+        }
+      })
+      document.getElementById('exportBtn').addEventListener('click', async () => {
+        try {
+          await navigator.clipboard.writeText(document.getElementById('dump').value)
+          alert('已复制到剪贴板')
+        } catch { document.getElementById('dump').select(); alert('请手动 Cmd+C 复制') }
+      })
+    </script>
+  </body>
+</html>

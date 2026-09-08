@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Library, type LibraryBook } from './components/Library'
 import { Reader } from './components/Reader'
-import { coverToDataUrl } from './lib/cover'
+import { coverToDataUrl, isValidCoverDataUrl } from './lib/cover'
 import { openEpub, type OpenedBook } from './lib/epub'
 import { navigate, useHashRoute } from './lib/router'
 import {
@@ -26,7 +26,8 @@ async function backfillMissingCovers(
   afterOne: () => void,
 ): Promise<void> {
   for (const meta of metas) {
-    if (meta.cover || backfillingCovers.has(meta.id) || noCoverConfirmed.has(meta.id)) continue
+    if (isValidCoverDataUrl(meta.cover) || backfillingCovers.has(meta.id) || noCoverConfirmed.has(meta.id))
+      continue
     backfillingCovers.add(meta.id)
     try {
       const file = await getBookFile(meta.id, meta.fileName)
