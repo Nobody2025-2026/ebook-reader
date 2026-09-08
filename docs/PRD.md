@@ -104,6 +104,7 @@ Settings   { fontSize, lineHeight, pageMargin, fontFamily, theme }   // 全局�
 - [ ] 目录点击跳转准确
 - [ ] 键盘 ← → 滚动、Esc 返回书库
 - [ ] 删除书籍连带清理进度记录
+- [ ] 连续加载多章后主动释放 blob URL，内存无明显增长
 
 工程验收（依 `AGENTS.md`）：
 
@@ -120,7 +121,21 @@ Settings   { fontSize, lineHeight, pageMargin, fontFamily, theme }   // 全局�
 | M3 | 排版面板 + 主题 + 目录跳转 + 键盘操作 |
 | M4 | 验收打磨：空状态、错误处理、大书性能 |
 
-## 九、待决问题
+## 九、桌面化预留（Tauri）
+
+后期可能套 Tauri 转桌面应用。解析库选型对此**有利但非决定因素**——真正决定是否返工的是以下三条约束，MVP 阶段就要守住：
+
+| # | 约束 | 说明 |
+|---|---|---|
+| 1 | 保持零后端、纯静态产物 | `dist/` 能被 Tauri 直接打包即可 |
+| 2 | 路由用 HashRouter | Tauri 运行在 `tauri://` 协议下，BrowserRouter 的 pushState 会白屏（加壳第一大坑） |
+| 3 | 抽象「书从哪来」 | 抽出 `BookSource` 接口：Web 实现 = 文件选择 + IndexedDB；桌面实现 = 文件对话框 + fs。解析层共用，不改 |
+
+**解析层为何无痛**：`@lingo-reader/epub-parser` 提供 `node` / `browser` 双条件导出，API 同构（Node 传文件路径，浏览器传 `File`），加壳时只替换文件来源层。
+
+**已知代价**：浏览器版资源以 blob URL 提供，多章连续加载需主动 `revokeObjectURL`，否则内存持续增长。已列入验收项。
+
+## 十、待决问题
 
 - 超过 10MB 的大部头加载性能是否需要预解析 / 懒加载
 - 封面缺失时的占位方案
