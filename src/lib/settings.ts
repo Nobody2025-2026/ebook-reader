@@ -4,6 +4,7 @@
 // 2. 设置是"外观"，不影响进度锚点（进度锚点是"第几章第几段"，与字号无关），
 //    所以改排版不会丢阅读位置。
 // 3. 只存用户改过的值，缺省走 DEFAULT，保证老数据兼容。
+import { get, set } from 'idb-keyval'
 
 export type Theme = 'day' | 'sepia' | 'night'
 
@@ -78,7 +79,6 @@ function normalizeFont(v: unknown): FontKey {
 }
 
 export async function loadSettings(): Promise<ReaderSettings> {
-  const { get } = await import('idb-keyval')
   const stored = await get<Partial<ReaderSettings>>(KEY_SETTINGS)
   const merged = { ...DEFAULT_SETTINGS, ...(stored ?? {}) }
   merged.fontFamily = normalizeFont(stored?.fontFamily)
@@ -86,6 +86,5 @@ export async function loadSettings(): Promise<ReaderSettings> {
 }
 
 export async function saveSettings(settings: ReaderSettings): Promise<void> {
-  const { set } = await import('idb-keyval')
   await set(KEY_SETTINGS, settings)
 }

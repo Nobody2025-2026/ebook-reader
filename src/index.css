@@ -308,6 +308,35 @@ body {
   border-color: #333338;
 }
 
+/* ---------- 恢复位置提示 ---------- */
+.restore-hint {
+  position: sticky;
+  top: 16px;
+  z-index: 5;
+  max-width: var(--reader-page-margin, 680px);
+  margin: 0 auto;
+  padding: 8px 16px;
+  background: var(--accent);
+  color: #fff;
+  border-radius: 20px;
+  font-size: 13px;
+  text-align: center;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.18);
+  pointer-events: none;
+  animation: restore-fade 0.25s ease-out;
+}
+
+@keyframes restore-fade {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 .chapter-sentinel {
   max-width: 680px;
   margin: 0 auto;

@@ -126,7 +126,7 @@ describe('阅读器', () => {
     await saveProgress('b1', { chapterIndex: 2, blockIndex: 5, percent: 70, updatedAt: Date.now() })
 
     render(<Reader bookId="b1" onExit={vi.fn()} />)
-    expect(await screen.findByText('c3 的正文')).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByText('c3 的正文')).toBeInTheDocument())
   })
 
   it('滚动后把进度写进存储', async () => {
@@ -159,6 +159,37 @@ describe('阅读器', () => {
     await screen.findByText('c1 的正文')
     fireEvent.keyDown(window, { key: 'Escape' })
     expect(onExit).toHaveBeenCalled()
+  })
+
+  it('方向键/空格翻屏，Home 回开头', async () => {
+    await saveBook(meta, new File(['a'], 'book.epub'))
+    const { container } = render(<Reader bookId="b1" onExit={vi.fn()} />)
+    await screen.findByText('c1 的正文')
+
+    const scroller = container.querySelector('.reader-scroll') as HTMLElement
+    // 给滚动容器一个高度，否则 clientHeight=0，翻屏量退化为 200
+    Object.defineProperty(scroller, 'clientHeight', { value: 600, configurable: true })
+    // jsdom 没实现 scrollBy，这里 spy 验证被调用
+    const scrollBy = vi.fn()
+    scroller.scrollBy = scrollBy as unknown as typeof scroller.scrollBy
+
+    fireEvent.keyDown(window, { key: 'ArrowRight' })
+    expect(scrollBy).toHaveBeenCalled()
+
+    fireEvent.keyDown(window, { key: ' ' })
+    expect(scrollBy).toHaveBeenCalledTimes(2)
+
+    fireEvent.keyDown(window, { key: 'ArrowLeft' })
+    expect(scrollBy).toHaveBeenCalledTimes(3)
+  })
+
+  it('有进度时打开书，显示「已回到上次阅读位置」提示', async () => {
+    await saveBook(meta, new File(['a'], 'book.epub'))
+    await saveProgress('b1', { chapterIndex: 1, blockIndex: 0, percent: 40, updatedAt: Date.now() })
+
+    render(<Reader bookId="b1" onExit={vi.fn()} />)
+    await screen.findByText('c2 的正文')
+    expect(await screen.findByText('已回到上次阅读位置')).toBeInTheDocument()
   })
 
   it('打开目录抽屉并点击跳转章节', async () => {

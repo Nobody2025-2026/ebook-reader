@@ -44,6 +44,8 @@ export function Reader({ bookId, onExit }: Props) {
   const [currentChapter, setCurrentChapter] = useState(0)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settings, setSettings] = useState<ReaderSettings>(DEFAULT_SETTINGS)
+  // 恢复位置提示 toast：短暂显示后自动消失
+  const [showRestoreHint, setShowRestoreHint] = useState(false)
 
   const bookRef = useRef<OpenedBook | null>(null)
   const chaptersRef = useRef<ChapterRef[]>([])
@@ -180,7 +182,13 @@ export function Reader({ bookId, onExit }: Props) {
 
     const tries = [0, 80, 250, 700, 1800]
     const timers = tries.map((delay) => setTimeout(tryRestore, delay))
-    return () => timers.forEach(clearTimeout)
+    // 有进度 = 从上次位置恢复，提示一下（2.5 秒后自动消失）
+    setShowRestoreHint(true)
+    const hideTimer = setTimeout(() => setShowRestoreHint(false), 2500)
+    return () => {
+      timers.forEach(clearTimeout)
+      clearTimeout(hideTimer)
+    }
   }, [status, loaded])
 
   const flushProgress = useCallback(() => {
@@ -305,11 +313,38 @@ export function Reader({ bookId, onExit }: Props) {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onExit()
+      const container = containerRef.current
+      if (!container) return
+      const page = Math.max(container.clientHeight - 48, 200) // 一屏高度，留 48px 视觉衔接
+
+      if (e.key === 'Escape') {
+        onExit()
+        return
+      }
+      // 目录/排版面板开着时，方向键不应滚动正文（避免误操作）
+      if (tocOpen || settingsOpen) return
+
+      switch (e.key) {
+        case 'ArrowRight':
+        case 'PageDown':
+        case ' ':
+          e.preventDefault()
+          container.scrollBy({ top: page, behavior: 'auto' })
+          break
+        case 'ArrowLeft':
+        case 'PageUp':
+          e.preventDefault()
+          container.scrollBy({ top: -page, behavior: 'auto' })
+          break
+        case 'Home':
+          e.preventDefault()
+          container.scrollTo({ top: 0, behavior: 'auto' })
+          break
+      }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [onExit])
+  }, [onExit, tocOpen, settingsOpen])
 
   // 离开页面前把最后的进度落盘
   useEffect(() => flushProgress, [flushProgress])
@@ -372,6 +407,9 @@ export function Reader({ bookId, onExit }: Props) {
             '--reader-font-family': FONT_STACKS[settings.fontFamily],
           } as React.CSSProperties}
         >
+          {showRestoreHint && (
+            <div className="restore-hint">已回到上次阅读位置</div>
+          )}
           {loaded.map((chapter) => (
             <article
               key={chapter.index}
