@@ -9,7 +9,14 @@ export type Theme = 'day' | 'sepia' | 'night'
 
 // 字体：用直观中文名，内部是语义 key。老版本存的是 'serif'/'sans'，
 // 加载时做一次迁移（见 loadSettings 里的 normalize）。
-export type FontKey = 'songti' | 'heiti' | 'kaiti' | 'yuanti' | 'fangsong'
+export type FontKey =
+  | 'songti'
+  | 'heiti'
+  | 'kaiti'
+  | 'yuanti'
+  | 'fangsong'
+  | 'siyuanhei'
+  | 'hiragino'
 
 export interface ReaderSettings {
   fontSize: number // px
@@ -36,6 +43,8 @@ export const FONT_STACKS: Record<FontKey, string> = {
   kaiti: '"Kaiti SC", "STKaiti", "楷体-简", "华文楷体", "KaiTi", serif',
   yuanti: '"Yuanti SC", "圆体-简", "STYuanti", "YouYuan", sans-serif',
   fangsong: '"STFangsong", "华文仿宋", "FangSong", "仿宋", serif',
+  siyuanhei: '"Source Han Sans CN", "思源黑体 CN", "PingFang SC", sans-serif',
+  hiragino: '"Hiragino Sans GB", "冬青黑体简体中文", "PingFang SC", sans-serif',
 }
 
 // 显示名（面板按钮用）
@@ -45,6 +54,8 @@ export const FONT_LABELS: Record<FontKey, string> = {
   kaiti: '楷体',
   yuanti: '圆体',
   fangsong: '仿宋',
+  siyuanhei: '思源黑体',
+  hiragino: '冬青黑体',
 }
 
 const KEY_SETTINGS = 'settings:reader'
@@ -53,9 +64,16 @@ const KEY_SETTINGS = 'settings:reader'
 function normalizeFont(v: unknown): FontKey {
   if (v === 'serif') return 'songti'
   if (v === 'sans') return 'heiti'
-  if (v === 'songti' || v === 'heiti' || v === 'kaiti' || v === 'yuanti' || v === 'fangsong') {
-    return v
-  }
+  const valid: FontKey[] = [
+    'songti',
+    'heiti',
+    'kaiti',
+    'yuanti',
+    'fangsong',
+    'siyuanhei',
+    'hiragino',
+  ]
+  if (valid.includes(v as FontKey)) return v as FontKey
   return DEFAULT_SETTINGS.fontFamily
 }
 

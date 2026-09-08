@@ -488,7 +488,7 @@ export function Reader({ bookId, onExit }: Props) {
                   {(Object.keys(FONT_LABELS) as FontKey[]).map((f) => (
                     <button
                       key={f}
-                      className={`settings-pill${settings.fontFamily === f ? ' active' : ''}`}
+                      className={`settings-pill settings-pill--font${settings.fontFamily === f ? ' active' : ''}`}
                       onClick={() => updateSettings({ fontFamily: f })}
                     >
                       {FONT_LABELS[f]}

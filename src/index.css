@@ -447,6 +447,14 @@ body {
   color: var(--fg);
   font-size: 13px;
   cursor: pointer;
+  text-align: center;
+  white-space: nowrap;
+}
+
+/* 字体按钮：等宽，避免「宋体」(2字) 与「思源黑体」(4字) 被 flex 拉成不同长度 */
+.settings-pill--font {
+  flex: 0 0 72px;
+  min-width: 72px;
 }
 
 .settings-pill:hover {
