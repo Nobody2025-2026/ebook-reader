@@ -10,9 +10,11 @@ import { prepareChapterHtml } from '../lib/sanitize'
 import { getBookFile, getBookMeta, getProgress, saveProgress } from '../lib/storage'
 import {
   DEFAULT_SETTINGS,
+  FONT_LABELS,
   FONT_STACKS,
   loadSettings,
   saveSettings,
+  type FontKey,
   type ReaderSettings,
 } from '../lib/settings'
 
@@ -483,13 +485,13 @@ export function Reader({ bookId, onExit }: Props) {
                   <span>字体</span>
                 </div>
                 <div className="settings-row">
-                  {(['serif', 'sans'] as const).map((f) => (
+                  {(Object.keys(FONT_LABELS) as FontKey[]).map((f) => (
                     <button
                       key={f}
                       className={`settings-pill${settings.fontFamily === f ? ' active' : ''}`}
                       onClick={() => updateSettings({ fontFamily: f })}
                     >
-                      {f === 'serif' ? '宋体' : '黑体'}
+                      {FONT_LABELS[f]}
                     </button>
                   ))}
                 </div>

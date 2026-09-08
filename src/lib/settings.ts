@@ -7,11 +7,15 @@
 
 export type Theme = 'day' | 'sepia' | 'night'
 
+// 字体：用直观中文名，内部是语义 key。老版本存的是 'serif'/'sans'，
+// 加载时做一次迁移（见 loadSettings 里的 normalize）。
+export type FontKey = 'songti' | 'heiti' | 'kaiti' | 'yuanti' | 'fangsong'
+
 export interface ReaderSettings {
   fontSize: number // px
   lineHeight: number // 无单位倍数
   pageMargin: number // 正文最大宽度，px
-  fontFamily: 'serif' | 'sans'
+  fontFamily: FontKey
   theme: Theme
 }
 
@@ -19,23 +23,48 @@ export const DEFAULT_SETTINGS: ReaderSettings = {
   fontSize: 18,
   lineHeight: 1.9,
   pageMargin: 680,
-  fontFamily: 'serif',
+  fontFamily: 'songti',
   theme: 'day',
 }
 
-// 各字体对应的 font-family 栈
-export const FONT_STACKS: Record<ReaderSettings['fontFamily'], string> = {
-  serif:
-    'Georgia, "Songti SC", "Noto Serif CJK SC", "Source Han Serif SC", STSong, "SimSun", serif',
-  sans: 'system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif',
+// 各字体对应的 font-family 栈（Mac 上真实可用的字体族，按优先级回退）。
+// 中文优先落在对应字重，西文/数字交给前面的西文字体（衬线用 Georgia，
+// 等宽数字用 system 的 tabular 特性，见 index.css 的 font-feature-settings）。
+export const FONT_STACKS: Record<FontKey, string> = {
+  songti: '"Songti SC", "STSong", "SimSun", "宋体-简", serif',
+  heiti: '"PingFang SC", "Hiragino Sans GB", "冬青黑体简体中文", "Microsoft YaHei", sans-serif',
+  kaiti: '"Kaiti SC", "STKaiti", "楷体-简", "华文楷体", "KaiTi", serif',
+  yuanti: '"Yuanti SC", "圆体-简", "STYuanti", "YouYuan", sans-serif',
+  fangsong: '"STFangsong", "华文仿宋", "FangSong", "仿宋", serif',
+}
+
+// 显示名（面板按钮用）
+export const FONT_LABELS: Record<FontKey, string> = {
+  songti: '宋体',
+  heiti: '黑体',
+  kaiti: '楷体',
+  yuanti: '圆体',
+  fangsong: '仿宋',
 }
 
 const KEY_SETTINGS = 'settings:reader'
 
+// 老版本存 'serif'/'sans'，这里迁移到新 key（宋体/黑体）
+function normalizeFont(v: unknown): FontKey {
+  if (v === 'serif') return 'songti'
+  if (v === 'sans') return 'heiti'
+  if (v === 'songti' || v === 'heiti' || v === 'kaiti' || v === 'yuanti' || v === 'fangsong') {
+    return v
+  }
+  return DEFAULT_SETTINGS.fontFamily
+}
+
 export async function loadSettings(): Promise<ReaderSettings> {
   const { get } = await import('idb-keyval')
   const stored = await get<Partial<ReaderSettings>>(KEY_SETTINGS)
-  return { ...DEFAULT_SETTINGS, ...(stored ?? {}) }
+  const merged = { ...DEFAULT_SETTINGS, ...(stored ?? {}) }
+  merged.fontFamily = normalizeFont(stored?.fontFamily)
+  return merged
 }
 
 export async function saveSettings(settings: ReaderSettings): Promise<void> {

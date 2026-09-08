@@ -250,6 +250,10 @@ body {
   font-size: var(--reader-font-size, 18px);
   line-height: var(--reader-line-height, 1.9);
   font-family: var(--reader-font-family, Georgia, "Songti SC", serif);
+  /* 数字用等宽表格式数字（lining/tabular figures），避免宋体/楷体里
+     老式不等宽数字（old-style figures）导致 45.3% 这类数字参差不齐 */
+  font-variant-numeric: tabular-nums lining-nums;
+  font-feature-settings: 'tnum' 1, 'lnum' 1;
 }
 
 .chapter img {
@@ -430,10 +434,12 @@ body {
 .settings-row {
   display: flex;
   gap: 8px;
+  flex-wrap: wrap;
 }
 
 .settings-pill {
   flex: 1;
+  min-width: 60px;
   padding: 8px 0;
   border: 1px solid var(--line);
   border-radius: 8px;
