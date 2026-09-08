@@ -31,3 +31,6 @@ npm-debug.log*
 
 # Node 端跑解析时落盘的临时资源（浏览器端走 blob URL，不写盘）
 images/
+
+# 测试用的真实电子书，体积大且有版权，只放本地不入库
+books/
