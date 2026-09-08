@@ -29,13 +29,29 @@ PDF 阅读 · 账号与云同步 · 多设备 · TTS 朗读 · 字典翻译 · �
 |---|---|---|
 | 运行形态 | 纯 Web 应用 | 零后端，Mac / Windows 双机都能跑；日后可套 Tauri 转桌面端 |
 | 框架 | Vite + React + TypeScript | 迭代快，类型安全 |
-| EPUB 解析 | `epub.js` | 生态最全，CFI 定位成熟 |
+| EPUB 解析 | `epub.js` 或 `@lingo-reader/epub-parser` | 二选一，**待定**，见下方选型备注 |
 | 存储 | IndexedDB | 存原始书文件 + 进度，容量够、无需后端 |
 | 状态管理 | zustand | 轻量 |
 | 排版 | CSS 变量 | 主题与排版参数实时切换 |
 | 测试 | Vitest + 真实样本手工验收 | 见「七、验收标准」 |
 
 **阅读模式：连续滚动**（不做分页翻页，规避窗口缩放重排的复杂度）。
+
+### 选型备注：EPUB 解析库二选一（2026-09-08 实测）
+
+| | `epub.js` 0.3.93 | `@lingo-reader/epub-parser` 0.4.6 |
+|---|---|---|
+| 最近更新 | 2023-09（基本停更） | 2026-04（活跃维护） |
+| 定位 | 全栈方案：解析 + 渲染 + CFI 定位 + 分页 | 纯解析：元数据、目录、章节内容、图片资源 |
+| 依赖 | 较老（jszip / xmldom 等） | 轻，TS 原生 |
+| 与本方案契合度 | 偏向分页渲染，滚动模式要绕开 rendition | 契合连续滚动：拿到章节 HTML 自己渲染 |
+| 代价 | 黑盒多，脏 EPUB 难调 | 进度定位要自己实现（章节 + 偏移） |
+
+**倾向：`@lingo-reader/epub-parser` + 自己渲染。** 理由是 MVP 走连续滚动，epub.js 的分页 rendition 反而是负担；且《涛动周期论》这类脏 EPUB 需要能自己下场调解析细节。
+
+**退路**：若自实现定位成本超预期，退回 `epub.js` 直接用 CFI。
+
+> 更正：早期文档写作 `@lingo-reader/epub`，该包名不存在，正确名为 `@lingo-reader/epub-parser`。
 
 ## 四、功能范围
 
@@ -108,5 +124,5 @@ Settings   { fontSize, lineHeight, pageMargin, fontFamily, theme }   // 全局�
 
 - 超过 10MB 的大部头加载性能是否需要预解析 / 懒加载
 - 封面缺失时的占位方案
-- 滚动位置精度：按 CFI 还是按滚动像素（MVP 先走 CFI）
+- 滚动位置定位方案：CFI 还是「章节 + 字符偏移」（取决于解析库选型，见第三章）
 - TXT 无目录结构，目录区如何处理（MVP 先隐藏）
