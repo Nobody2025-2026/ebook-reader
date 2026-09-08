@@ -1,7 +1,11 @@
 :root {
   --bg: #f6f5f2;
+  --surface: #fffefb;
   --fg: #2c2c2a;
   --muted: #6b6a66;
+  --line: #e2e0d8;
+  --accent: #534ab7;
+  --danger: #a32d2d;
   font-family: system-ui, -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif;
 }
 
@@ -15,20 +19,273 @@ body {
   color: var(--fg);
 }
 
-.app {
-  max-width: 960px;
+.btn {
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--fg);
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.btn-ghost {
+  border-color: transparent;
+  background: transparent;
+}
+
+/* ---------- 书库 ---------- */
+.library {
+  max-width: 1040px;
   margin: 0 auto;
-  padding: 48px 24px;
+  padding: 40px 24px 64px;
+  min-height: 100vh;
 }
 
-h1 {
-  font-size: 24px;
+.library.is-dragging {
+  outline: 2px dashed var(--accent);
+  outline-offset: -12px;
+  border-radius: 16px;
+}
+
+.library-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.library-heading {
+  font-size: 22px;
   font-weight: 500;
-  margin: 0 0 8px;
+  margin: 0;
 }
 
-.hint {
+.library-hint {
+  color: var(--muted);
+  font-size: 13px;
+  margin: 0 0 20px;
+}
+
+.empty {
+  border: 1px dashed var(--line);
+  border-radius: 16px;
+  padding: 72px 24px;
+  text-align: center;
+}
+
+.empty-title {
+  font-size: 16px;
+  margin: 0 0 6px;
+}
+
+.empty-sub {
   color: var(--muted);
   font-size: 14px;
   margin: 0;
+}
+
+.shelf {
+  list-style: none;
+  padding: 0;
+  margin: 24px 0 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 20px;
+}
+
+.book-card {
+  position: relative;
+}
+
+.book-open {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  padding: 14px;
+  text-align: left;
+  cursor: pointer;
+  display: block;
+  font: inherit;
+  color: inherit;
+}
+
+.book-open:hover {
+  border-color: var(--accent);
+}
+
+.book-cover {
+  aspect-ratio: 3 / 4;
+  background: #eceae3;
+  border-radius: 8px;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 12px;
+}
+
+.book-cover img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.cover-fallback {
+  font-size: 32px;
+  color: var(--muted);
+}
+
+.book-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+
+.book-title {
+  font-size: 14px;
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.book-author {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.bar {
+  height: 4px;
+  background: #eceae3;
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.bar-fill {
+  height: 100%;
+  background: var(--accent);
+}
+
+.book-percent {
+  display: block;
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.book-delete {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(255, 255, 255, 0.9);
+  color: var(--muted);
+  cursor: pointer;
+  line-height: 1;
+}
+
+.book-delete:hover {
+  color: var(--danger);
+}
+
+/* ---------- 阅读器 ---------- */
+.reader {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.reader-bar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 10px 20px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.reader-title {
+  flex: 1;
+  font-size: 14px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.reader-percent {
+  font-size: 13px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.reader-scroll {
+  flex: 1;
+  overflow-y: auto;
+  position: relative;
+  padding: 0 20px;
+}
+
+.chapter {
+  max-width: 680px;
+  margin: 0 auto;
+  padding: 32px 0;
+  font-size: 18px;
+  line-height: 1.9;
+}
+
+.chapter img {
+  max-width: 100%;
+  height: auto;
+}
+
+.chapter-sentinel {
+  max-width: 680px;
+  margin: 0 auto;
+  padding: 24px 0 64px;
+  color: var(--muted);
+  font-size: 13px;
+  text-align: center;
+}
+
+/* ---------- 状态页 ---------- */
+.state-page {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+}
+
+.state-hint {
+  font-size: 16px;
+  margin: 0;
+}
+
+.state-error {
+  color: var(--danger);
+}
+
+.state-sub {
+  color: var(--muted);
+  font-size: 14px;
+  margin: 0 0 8px;
 }
