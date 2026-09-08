@@ -28,3 +28,6 @@ npm-debug.log*
 
 # WorkBuddy 工作区数据（含项目记忆，不入库）
 .workbuddy/
+
+# Node 端跑解析时落盘的临时资源（浏览器端走 blob URL，不写盘）
+images/
