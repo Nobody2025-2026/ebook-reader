@@ -8,6 +8,7 @@ import { Library } from '../src/components/Library'
 import { Reader } from '../src/components/Reader'
 import { webBookSource } from '../src/lib/bookSource'
 import {
+  clearProgress,
   deleteBook,
   getBookFile,
   getProgress,
@@ -82,11 +83,20 @@ describe('存储层', () => {
     expect(await getBookFile('b1', 'book.epub')).toBeUndefined()
     expect(await getProgress('b1')).toBeUndefined()
   })
+
+  it('clearProgress 只清进度，不删书', async () => {
+    await saveBook(meta, new File(['a'], 'a.epub'))
+    await saveProgress('b1', { chapterIndex: 1, blockIndex: 3, percent: 40, updatedAt: Date.now() })
+
+    await clearProgress('b1')
+    expect(await getProgress('b1')).toBeUndefined()
+    expect(await getBookFile('b1', 'book.epub')).toBeTruthy()
+  })
 })
 
 describe('书库页', () => {
   it('空书架给明确引导', () => {
-    render(<Library books={[]} importing={false} importHint="" onImport={vi.fn()} onOpen={vi.fn()} onDelete={vi.fn()} />)
+    render(<Library books={[]} importing={false} importHint="" onImport={vi.fn()} onOpen={vi.fn()} onRestart={vi.fn()} onDelete={vi.fn()} />)
     expect(screen.getByText('书架是空的')).toBeInTheDocument()
   })
 
@@ -98,19 +108,39 @@ describe('书库页', () => {
         importHint=""
         onImport={vi.fn()}
         onOpen={vi.fn()}
+        onRestart={vi.fn()}
         onDelete={vi.fn()}
       />,
     )
     expect(screen.getByText('测试书')).toBeInTheDocument()
     expect(screen.getByText('主上大人')).toBeInTheDocument()
     expect(screen.getByText('40% · 继续阅读')).toBeInTheDocument()
+    // 有进度的书应有「从头读」入口
+    expect(screen.getByText('从头读')).toBeInTheDocument()
   })
 
   it('点封面打开对应的书', () => {
     const onOpen = vi.fn()
-    render(<Library books={[meta]} importing={false} importHint="" onImport={vi.fn()} onOpen={onOpen} onDelete={vi.fn()} />)
+    render(<Library books={[meta]} importing={false} importHint="" onImport={vi.fn()} onOpen={onOpen} onRestart={vi.fn()} onDelete={vi.fn()} />)
     fireEvent.click(screen.getByRole('button', { name: /测试书/ }))
     expect(onOpen).toHaveBeenCalledWith('b1')
+  })
+
+  it('点「从头读」清除进度并打开书', async () => {
+    const onRestart = vi.fn()
+    render(
+      <Library
+        books={[{ ...meta, progress: { chapterIndex: 1, blockIndex: 0, percent: 40, updatedAt: 1 } }]}
+        importing={false}
+        importHint=""
+        onImport={vi.fn()}
+        onOpen={vi.fn()}
+        onRestart={onRestart}
+        onDelete={vi.fn()}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: '从头读' }))
+    expect(onRestart).toHaveBeenCalledWith('b1')
   })
 })
 

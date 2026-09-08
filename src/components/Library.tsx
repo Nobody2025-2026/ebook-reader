@@ -13,10 +13,12 @@ interface Props {
   importHint: string
   onImport: (file: File) => void
   onOpen: (id: string) => void
+  /** 从头读：清除进度后打开（区别于「继续阅读」的自动恢复） */
+  onRestart: (id: string) => void
   onDelete: (id: string) => void
 }
 
-export function Library({ books, importing, importHint, onImport, onOpen, onDelete }: Props) {
+export function Library({ books, importing, importHint, onImport, onOpen, onRestart, onDelete }: Props) {
   const [dragging, setDragging] = useState(false)
 
   const handleDrop = (e: React.DragEvent) => {
@@ -56,7 +58,18 @@ export function Library({ books, importing, importHint, onImport, onOpen, onDele
             const percent = book.progress?.percent ?? 0
             return (
               <li key={book.id} className="book-card">
-                <button className="book-open" onClick={() => onOpen(book.id)}>
+                <div
+                  className="book-open"
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => onOpen(book.id)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault()
+                      onOpen(book.id)
+                    }
+                  }}
+                >
                   <div className="book-cover">
                     {book.cover ? <img src={book.cover} alt="" loading="lazy" /> : <span className="cover-fallback">{(book.title || '?').slice(0, 1)}</span>}
                   </div>
@@ -68,11 +81,25 @@ export function Library({ books, importing, importHint, onImport, onOpen, onDele
                     <div className="bar">
                       <div className="bar-fill" style={{ width: `${percent}%` }} />
                     </div>
-                    <span className="book-percent">
-                      {percent > 0 ? `${percent.toFixed(0)}% · 继续阅读` : '尚未开始'}
-                    </span>
+                    <div className="book-progress-row">
+                      <span className="book-percent">
+                        {percent > 0 ? `${percent.toFixed(0)}% · 继续阅读` : '尚未开始'}
+                      </span>
+                      {percent > 0 && (
+                        <button
+                          className="book-restart"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            onRestart(book.id)
+                          }}
+                          title="从头读这本书"
+                        >
+                          从头读
+                        </button>
+                      )}
+                    </div>
                   </div>
-                </button>
+                </div>
                 <button className="book-delete" onClick={() => onDelete(book.id)} title="从书架移除">
                   ×
                 </button>

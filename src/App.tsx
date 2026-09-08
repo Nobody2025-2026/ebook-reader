@@ -4,7 +4,7 @@ import { Reader } from './components/Reader'
 import { coverToDataUrl } from './lib/cover'
 import { openEpub, type OpenedBook } from './lib/epub'
 import { navigate, useHashRoute } from './lib/router'
-import { deleteBook, listBooks, listProgress, saveBook } from './lib/storage'
+import { deleteBook, clearProgress, listBooks, listProgress, saveBook } from './lib/storage'
 
 export default function App() {
   const route = useHashRoute()
@@ -62,6 +62,15 @@ export default function App() {
     [refresh],
   )
 
+  const handleRestart = useCallback(
+    async (id: string) => {
+      await clearProgress(id)
+      await refresh()
+      navigate(`/read/${encodeURIComponent(id)}`)
+    },
+    [refresh],
+  )
+
   const goLibrary = useCallback(() => {
     navigate('/')
     void refresh()
@@ -78,6 +87,7 @@ export default function App() {
       importHint={importHint}
       onImport={(file) => void handleImport(file)}
       onOpen={(id) => navigate(`/read/${encodeURIComponent(id)}`)}
+      onRestart={(id) => void handleRestart(id)}
       onDelete={(id) => void handleDelete(id)}
     />
   )
