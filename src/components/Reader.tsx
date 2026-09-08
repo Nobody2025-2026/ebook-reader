@@ -8,6 +8,13 @@ import {
 } from '../lib/progress'
 import { prepareChapterHtml } from '../lib/sanitize'
 import { getBookFile, getBookMeta, getProgress, saveProgress } from '../lib/storage'
+import {
+  DEFAULT_SETTINGS,
+  FONT_STACKS,
+  loadSettings,
+  saveSettings,
+  type ReaderSettings,
+} from '../lib/settings'
 
 // 块级元素选择器：覆盖小说/学术书里绝大多数情况。
 // 真实样本《涛动周期论》里就是这几种在撑页面。
@@ -33,6 +40,8 @@ export function Reader({ bookId, onExit }: Props) {
   const [toc, setToc] = useState<TocEntry[]>([])
   const [tocOpen, setTocOpen] = useState(false)
   const [currentChapter, setCurrentChapter] = useState(0)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [settings, setSettings] = useState<ReaderSettings>(DEFAULT_SETTINGS)
 
   const bookRef = useRef<OpenedBook | null>(null)
   const chaptersRef = useRef<ChapterRef[]>([])
@@ -80,7 +89,12 @@ export function Reader({ bookId, onExit }: Props) {
 
     void (async () => {
       try {
-        const [meta, progress] = await Promise.all([getBookMeta(bookId), getProgress(bookId)])
+        const [meta, progress, savedSettings] = await Promise.all([
+          getBookMeta(bookId),
+          getProgress(bookId),
+          loadSettings(),
+        ])
+        if (!cancelled) setSettings(savedSettings)
         const file = await getBookFile(bookId, meta?.fileName ?? 'book.epub')
         if (!file) throw new Error('找不到这本书的内容，可能已被清理')
 
@@ -200,6 +214,16 @@ export function Reader({ bookId, onExit }: Props) {
     saveTimer.current = setTimeout(flushProgress, 500)
   }, [collectBlocks, flushProgress])
 
+  // 更新排版设置：立即生效 + 防抖落盘（拖动滑条会高频触发）
+  const updateSettings = useCallback((patch: Partial<ReaderSettings>) => {
+    setSettings((prev) => {
+      const next = { ...prev, ...patch }
+      // 落盘（不阻塞渲染）
+      void saveSettings(next)
+      return next
+    })
+  }, [])
+
   // 目录跳转：标记目标，加载目标章（若未加载），定位滚动统一由下方 effect 处理
   const jumpTo = useCallback(
     async (chapterIndex: number, selector?: string) => {
@@ -310,7 +334,7 @@ export function Reader({ bookId, onExit }: Props) {
   }
 
   return (
-    <div className="reader">
+    <div className={`reader theme-${settings.theme}`}>
       <header className="reader-bar">
         <button className="btn btn-ghost" onClick={onExit} title="返回书库（Esc）">
           ← 书库
@@ -324,11 +348,28 @@ export function Reader({ bookId, onExit }: Props) {
         >
           目录
         </button>
+        <button
+          className="btn btn-ghost"
+          onClick={() => setSettingsOpen((v) => !v)}
+          title="排版"
+        >
+          排版
+        </button>
         <span className="reader-percent">{percent.toFixed(1)}%</span>
       </header>
 
       <div className="reader-body">
-        <div className="reader-scroll" ref={containerRef} onScroll={handleScroll}>
+        <div
+          className="reader-scroll"
+          ref={containerRef}
+          onScroll={handleScroll}
+          style={{
+            '--reader-font-size': `${settings.fontSize}px`,
+            '--reader-line-height': `${settings.lineHeight}`,
+            '--reader-page-margin': `${settings.pageMargin}px`,
+            '--reader-font-family': FONT_STACKS[settings.fontFamily],
+          } as React.CSSProperties}
+        >
           {loaded.map((chapter) => (
             <article
               key={chapter.index}
@@ -373,6 +414,108 @@ export function Reader({ bookId, onExit }: Props) {
                 />
               ))}
             </nav>
+          </aside>
+        )}
+
+        {settingsOpen && (
+          <aside className="settings-panel">
+            <div className="settings-header">
+              <span>排版</span>
+              <button
+                className="btn btn-ghost"
+                onClick={() => setSettingsOpen(false)}
+                title="关闭排版"
+              >
+                ×
+              </button>
+            </div>
+            <div className="settings-body">
+              <div className="settings-group">
+                <div className="settings-label">
+                  <span>字号</span>
+                  <span className="settings-value">{settings.fontSize}px</span>
+                </div>
+                <input
+                  type="range"
+                  min="14"
+                  max="28"
+                  step="1"
+                  value={settings.fontSize}
+                  aria-label="字号"
+                  onChange={(e) => updateSettings({ fontSize: Number(e.target.value) })}
+                />
+              </div>
+
+              <div className="settings-group">
+                <div className="settings-label">
+                  <span>行距</span>
+                  <span className="settings-value">{settings.lineHeight.toFixed(1)}</span>
+                </div>
+                <input
+                  type="range"
+                  min="1.4"
+                  max="2.8"
+                  step="0.1"
+                  value={settings.lineHeight}
+                  aria-label="行距"
+                  onChange={(e) => updateSettings({ lineHeight: Number(e.target.value) })}
+                />
+              </div>
+
+              <div className="settings-group">
+                <div className="settings-label">
+                  <span>页边距（正文宽度）</span>
+                  <span className="settings-value">{settings.pageMargin}px</span>
+                </div>
+                <input
+                  type="range"
+                  min="480"
+                  max="900"
+                  step="20"
+                  value={settings.pageMargin}
+                  aria-label="页边距"
+                  onChange={(e) => updateSettings({ pageMargin: Number(e.target.value) })}
+                />
+              </div>
+
+              <div className="settings-group">
+                <div className="settings-label">
+                  <span>字体</span>
+                </div>
+                <div className="settings-row">
+                  {(['serif', 'sans'] as const).map((f) => (
+                    <button
+                      key={f}
+                      className={`settings-pill${settings.fontFamily === f ? ' active' : ''}`}
+                      onClick={() => updateSettings({ fontFamily: f })}
+                    >
+                      {f === 'serif' ? '衬线' : '无衬线'}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="settings-group">
+                <div className="settings-label">
+                  <span>主题</span>
+                </div>
+                <div className="settings-row">
+                  {([
+                    ['day', '日间'],
+                    ['sepia', '护眼'],
+                    ['night', '夜间'],
+                  ] as const).map(([t, label]) => (
+                    <button
+                      key={t}
+                      className={`settings-pill${settings.theme === t ? ' active' : ''}`}
+                      onClick={() => updateSettings({ theme: t })}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
           </aside>
         )}
       </div>

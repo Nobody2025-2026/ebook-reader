@@ -174,6 +174,30 @@ describe('阅读器', () => {
     fireEvent.click(screen.getByRole('button', { name: '第三章' }))
     await waitFor(() => expect(screen.getByText('c3 的正文')).toBeInTheDocument())
   })
+
+  it('打开排版面板，调整字号和主题', async () => {
+    await saveBook(meta, new File(['a'], 'book.epub'))
+    const { container } = render(<Reader bookId="b1" onExit={vi.fn()} />)
+    await screen.findByText('c1 的正文')
+
+    // 点排版按钮，面板出现
+    fireEvent.click(screen.getByRole('button', { name: '排版' }))
+    expect(await screen.findByText('字号')).toBeInTheDocument()
+
+    // 切到夜间主题：.reader 应有 theme-night class
+    fireEvent.click(screen.getByRole('button', { name: '夜间' }))
+    await waitFor(() => {
+      expect(container.querySelector('.reader')).toHaveClass('theme-night')
+    })
+
+    // 调整字号滑条：正文容器应拿到对应 CSS 变量
+    const range = screen.getByRole('slider', { name: /字号/ }) as HTMLInputElement
+    fireEvent.change(range, { target: { value: '22' } })
+    await waitFor(() => {
+      const scroller = container.querySelector('.reader-scroll') as HTMLElement
+      expect(scroller.style.getPropertyValue('--reader-font-size')).toBe('22px')
+    })
+  })
 })
 
 describe('导入流程', () => {

@@ -244,16 +244,64 @@ body {
 }
 
 .chapter {
-  max-width: 680px;
+  max-width: var(--reader-page-margin, 680px);
   margin: 0 auto;
   padding: 32px 0;
-  font-size: 18px;
-  line-height: 1.9;
+  font-size: var(--reader-font-size, 18px);
+  line-height: var(--reader-line-height, 1.9);
+  font-family: var(--reader-font-family, Georgia, "Songti SC", serif);
 }
 
 .chapter img {
   max-width: 100%;
   height: auto;
+}
+
+.chapter img {
+  max-width: 100%;
+  height: auto;
+}
+
+/* ---------- 阅读主题（护眼 / 夜间） ---------- */
+/* 主题变量挂在 .reader 上，内联 style 只覆盖排版数值，主题靠 class 切换配色 */
+.reader {
+  --reader-bg: var(--surface);
+  --reader-fg: var(--fg);
+  --reader-bar-bg: var(--surface);
+}
+
+.reader.theme-sepia {
+  --reader-bg: #f5ecd9;
+  --reader-fg: #4a4032;
+  --reader-bar-bg: #f0e6cf;
+}
+
+.reader.theme-night {
+  --reader-bg: #1a1a1e;
+  --reader-fg: #b8b8c0;
+  --reader-bar-bg: #232328;
+}
+
+.reader .reader-bar {
+  background: var(--reader-bar-bg);
+  color: var(--reader-fg);
+  border-bottom-color: var(--line);
+}
+
+.reader .reader-scroll {
+  background: var(--reader-bg);
+  color: var(--reader-fg);
+}
+
+.reader .reader-title,
+.reader .reader-percent {
+  color: var(--reader-fg);
+  opacity: 0.7;
+}
+
+.reader.theme-night .reader-bar,
+.reader.theme-night .reader-scroll {
+  border-color: #333338;
 }
 
 .chapter-sentinel {
@@ -326,6 +374,97 @@ body {
 .toc-active {
   color: var(--accent);
   font-weight: 600;
+}
+
+/* ---------- 排版面板 ---------- */
+.settings-panel {
+  width: 300px;
+  flex-shrink: 0;
+  border-left: 1px solid var(--line);
+  background: var(--surface);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.settings-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.settings-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+}
+
+.settings-group {
+  margin-bottom: 20px;
+}
+
+.settings-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 13px;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+
+.settings-value {
+  color: var(--fg);
+  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+}
+
+.settings-group input[type='range'] {
+  width: 100%;
+  accent-color: var(--accent);
+}
+
+.settings-row {
+  display: flex;
+  gap: 8px;
+}
+
+.settings-pill {
+  flex: 1;
+  padding: 8px 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--fg);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.settings-pill:hover {
+  border-color: var(--accent);
+}
+
+.settings-pill.active {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+/* 主题色块预览 */
+.theme-swatch {
+  display: flex;
+  border-radius: 6px;
+  overflow: hidden;
+  margin-bottom: 4px;
+  border: 1px solid var(--line);
+}
+
+.theme-swatch span {
+  flex: 1;
+  height: 22px;
 }
 
 /* ---------- 状态页 ---------- */
