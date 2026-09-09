@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { normalizeTitle, openEpub, type OpenedBook } from '../src/lib/epub'
+import { prepareChapterHtml } from '../src/lib/sanitize'
 
 const realBook = resolve(process.cwd(), 'books/涛动周期论.epub')
 const hasRealBook = existsSync(realBook)
@@ -61,6 +62,17 @@ describe.skipIf(!hasRealBook)('真实样本《涛动周期论》', () => {
     expect(book.meta.cover).toBeTruthy()
   })
 
+  it('正文清洗后不残留内联字号/字体（否则读者调字号、切字体都会被压过）', async () => {
+    const target = book.chapters.find((c) => c.id === 'Chapter4_1') ?? book.chapters[1]
+    const { html } = await book.loadChapter(target.id)
+    // 清洗前确实焊着内联排版样式——这正是字号调不动的根因
+    expect(html).toMatch(/font-size/)
+    // 清洗后必须干净，字号与字体交回给阅读器
+    const prepared = prepareChapterHtml(html)
+    expect(prepared).not.toMatch(/font-size/)
+    expect(prepared).not.toMatch(/font-family/)
+  })
+
   it('含图章节的图片 src 被换成可加载地址，而不是原始相对路径', async () => {
     const target = book.chapters.find((c) => c.id === 'Chapter4_1') ?? book.chapters[1]
     const { html } = await book.loadChapter(target.id)
@@ -68,5 +80,34 @@ describe.skipIf(!hasRealBook)('真实样本《涛动周期论》', () => {
     expect(srcs.length).toBeGreaterThan(0)
     // 原始 EPUB 里是相对路径（如 EPUB/images/xxx.jpg），库必须已换成绝对地址
     for (const src of srcs) expect(src.startsWith('EPUB/')).toBe(false)
+  })
+})
+
+// 第二本真实样本：Kindle 风格转换产物。页面全叫 part0000.xhtml，一个 cover 字样都没有；
+// 封面改由 OPF <meta name="cover"> 声明，且那张图不被任何页面引用 ——
+// 正是它暴露了「只找 cover 命名的封面页」这条兜底链的盲区。
+const metaCoverBook = resolve(process.cwd(), 'books/博弈与社会.epub')
+const hasMetaCoverBook = existsSync(metaCoverBook)
+
+describe.skipIf(!hasMetaCoverBook)('真实样本《博弈与社会》（封面走 OPF meta 声明）', () => {
+  let book: OpenedBook
+  const saveDir = mkdtempSync(join(tmpdir(), 'reader-test-'))
+
+  beforeAll(async () => {
+    book = await openEpub(metaCoverBook, { resourceSaveDir: saveDir })
+  }, 120_000)
+
+  afterAll(() => {
+    book?.destroy()
+    rmSync(saveDir, { recursive: true, force: true })
+  })
+
+  it('封面兜底能拿到地址：该书没有 cover 命名的页面，只能走书名页', () => {
+    expect(book.meta.cover).toBeTruthy()
+  })
+
+  it('标题是正常书名，不是文件名', () => {
+    expect(book.meta.title).toBeTruthy()
+    expect(book.meta.title).not.toMatch(/\.epub$/i)
   })
 })

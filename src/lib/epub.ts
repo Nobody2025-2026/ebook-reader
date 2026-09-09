@@ -85,6 +85,9 @@ function collectTocLabels(epub: EpubFile): Map<string, string> {
   return labels
 }
 
+/** 书名页体积上限：超过这个长度基本是正文，不该拿来当封面抠图 */
+const COVER_PAGE_MAX_LEN = 10_000
+
 /**
  * 封面兜底链（真实脏书实测得来，多本书各暴露一个坑）：
  *
@@ -98,34 +101,64 @@ function collectTocLabels(epub: EpubFile): Map<string, string> {
  * 抠图正则要同时兼容：
  *   - <img src="...">（《涛动周期论》《策略思维》）
  *   - SVG <image xlink:href="...">（《认知世界的经济学》）
+ *
+ * 另一个坑（《博弈与社会》暴露的）：有些书用 OPF 的
+ *   <meta name="cover" content="cover_img"/> + <item id="cover_img" href="…/x.jpeg"/>
+ * 声明封面图，但那张图**不被任何页面引用**。解析库只把章节引用到的资源转成
+ * blob URL，孤立资源根本没有地址可拿，于是"找封面页→抠图"这条路整个落空
+ * （该书页面还全叫 part0000.xhtml，连 cover 字样都没有）。
+ * 这类书退而求其次：加载 spine 首个章节（书名页）抠图。
  */
 async function safeCover(epub: EpubFile): Promise<string | undefined> {
   try {
     const manifest = epub.getManifest()
 
-    // 找封面页：优先 properties="cover-image"，其次 id/href 含 cover/titlepage 的 html
+    // ① 找封面页：优先 properties="cover-image"，其次 id/href 含 cover/titlepage 的 html
     const coverPage = Object.entries(manifest).find(([, item]) => {
       const isHtml = /(xhtml|html)/i.test(item.mediaType ?? '')
       if (!isHtml) return false
       const name = `${item.id} ${item.href ?? ''}`
       return item.properties?.includes('cover-image') || /cover|titlepage/i.test(name)
     })
-    if (!coverPage) return undefined
+    if (coverPage) {
+      const url = await imageFromChapter(epub, coverPage[0], coverPage[1].href ?? '')
+      if (url) return url
+    }
 
-    // 坑：manifest 里的 href 是裸路径，resolveHref 只认带 "epub:" 前缀的；
-    // 两样都试，最后退回直接用 manifest 的 id（它本身就是合法的章节 id）
-    const [chapterId, item] = coverPage
-    const resolved = epub.resolveHref(item.href) ?? epub.resolveHref(`epub:${item.href}`)
-    const { html } = await epub.loadChapter(resolved?.id ?? chapterId)
-
-    // 兼容 <img src> 与 SVG <image xlink:href> 两种写法
-    return (
-      html.match(/<img[^>]+src="([^"]+)"/i)?.[1] ??
-      html.match(/<image[^>]+(?:xlink:href|href)="([^"]+)"/i)?.[1]
-    )
+    // ② 兜底：书名页。spine 首项通常是书名页/封面页，且它里面那张图基本就是封面。
+    //    加长度门槛：书名页很短，正文第一章很长，别把正文里的插图抠成封面。
+    const first = epub.getSpine()[0]
+    if (first) {
+      const { html } = await epub.loadChapter(first.id)
+      if (html.length < COVER_PAGE_MAX_LEN) return matchChapterImage(html)
+    }
+    return undefined
   } catch {
     return undefined
   }
+}
+
+/** 兼容 <img src> 与 SVG <image xlink:href> 两种写法 */
+function matchChapterImage(html: string): string | undefined {
+  return (
+    html.match(/<img[^>]+src="([^"]+)"/i)?.[1] ??
+    html.match(/<image[^>]+(?:xlink:href|href)="([^"]+)"/i)?.[1]
+  )
+}
+
+/**
+ * 加载某个 manifest 项对应的章节并抠图。
+ * 坑：manifest 里的 href 是裸路径，resolveHref 只认带 "epub:" 前缀的；
+ * 两种都试，最后退回直接用 manifest 的 id（它本身就是合法的章节 id）。
+ */
+async function imageFromChapter(
+  epub: EpubFile,
+  id: string,
+  href: string,
+): Promise<string | undefined> {
+  const resolved = epub.resolveHref(href) ?? epub.resolveHref(`epub:${href}`)
+  const { html } = await epub.loadChapter(resolved?.id ?? id)
+  return matchChapterImage(html)
 }
 
 /**
