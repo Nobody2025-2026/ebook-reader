@@ -10,6 +10,8 @@ export interface BookMeta {
   title: string
   author: string
   cover?: string
+  /** 这份封面是用第几版提取算法得到的，算法改了就自动重取（见 cover.ts） */
+  coverVersion?: number
   fileName: string
   chapterCount: number
   addedAt: number
@@ -109,13 +111,18 @@ export async function removeBookmark(bookId: string, id: string): Promise<void> 
 }
 
 /**
- * 补封面：给早期导入、cover 为空的书补上封面。
- * 只改 cover 字段，其余元数据原样保留（新增/删书都可能并发，做合并而非覆盖）。
+ * 写入封面：给早期导入、cover 为空或封面版本过旧的书补/换封面。
+ * 只改 cover 与 coverVersion，其余元数据原样保留（新增/删书都可能并发，
+ * 做合并而非覆盖）。
  */
-export async function updateBookCover(id: string, cover: string): Promise<void> {
+export async function updateBookCover(
+  id: string,
+  cover: string,
+  version: number,
+): Promise<void> {
   const meta = await get<BookMeta>(KEY_META + id)
   if (!meta) return
-  await set(KEY_META + id, { ...meta, cover })
+  await set(KEY_META + id, { ...meta, cover, coverVersion: version })
 }
 
 /** 删书必须连带删进度和书签，否则会留下孤儿记录 */

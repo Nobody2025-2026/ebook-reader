@@ -2,12 +2,30 @@
 // 真实脏样本验收：把《涛动周期论》（70MB，z-library 来源，OCR 图多）当标杆。
 // 书不放进仓库（见 .gitignore 的 books/），缺书时这些用例自动跳过——
 // 但它必须在本机跑过，否则等于没验收。
+import { readFileSync } from 'node:fs'
 import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { unzipSync } from 'fflate'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { normalizeTitle, openEpub, type OpenedBook } from '../src/lib/epub'
 import { prepareChapterHtml } from '../src/lib/sanitize'
+
+/** 直接从 epub（本质是 zip）里按路径后缀读出某个条目的字节，用来校验封面取对了没 */
+function readZipEntry(epubPath: string, suffix: string): Uint8Array | undefined {
+  const files = unzipSync(new Uint8Array(readFileSync(epubPath)))
+  for (const [name, bytes] of Object.entries(files)) {
+    if (name.endsWith(suffix)) return bytes
+  }
+  return undefined
+}
+
+/** 把封面 data URL 还原成字节，好跟 zip 里的原图逐字节比对 */
+function coverBytes(cover: string | undefined): Uint8Array | undefined {
+  const base64 = cover?.split(',')[1]
+  if (!base64) return undefined
+  return Uint8Array.from(atob(base64), (ch) => ch.charCodeAt(0))
+}
 
 const realBook = resolve(process.cwd(), 'books/涛动周期论.epub')
 const hasRealBook = existsSync(realBook)
@@ -58,8 +76,13 @@ describe.skipIf(!hasRealBook)('真实样本《涛动周期论》', () => {
     expect(placeholder.length).toBeLessThan(labels.length * 0.2)
   })
 
-  it('封面兜底能拿到地址（getCoverImage 在这本书上返回空串）', () => {
-    expect(book.meta.cover).toBeTruthy()
+  it('封面与 OPF 声明的那张图字节一致（访达/Quick Look 同款规则）', () => {
+    // 这本书 OPF 里 <meta name="cover" content="cover.jpg"> + properties="cover-image"。
+    // 最强断言：解出的封面必须和 zip 里 images/cover.jpg 一模一样，
+    // 防止再出现"抠到题名图/占位图还自我感觉良好"的情况。
+    const declared = readZipEntry(realBook, 'images/cover.jpg')
+    expect(declared).toBeTruthy()
+    expect(coverBytes(book.meta.cover)).toEqual(declared)
   })
 
   it('正文清洗后不残留内联字号/字体（否则读者调字号、切字体都会被压过）', async () => {
@@ -102,18 +125,12 @@ describe.skipIf(!hasMetaCoverBook)('真实样本《博弈与社会》（封面�
     rmSync(saveDir, { recursive: true, force: true })
   })
 
-  it('封面走 OPF meta 声明的孤立图（data URL + JPEG 魔数），不是书名页题名图', () => {
-    const cover = book.meta.cover
-    expect(cover).toBeTruthy()
-    // 必须是 data URL —— 旧实现返回的是书名页抠出来的图地址（题名图，不是封面）
-    expect(cover).toMatch(/^data:image\/jpeg;base64,/)
-    // 解出字节校验 JPEG 魔数（FFD8），确保是真图而不是空壳
-    const base64 = (cover as string).slice('data:image/jpeg;base64,'.length)
-    const bytes = Uint8Array.from(atob(base64), (ch) => ch.charCodeAt(0))
-    expect(bytes[0]).toBe(0xff)
-    expect(bytes[1]).toBe(0xd8)
-    // 真封面比题名图大得多（题名图只有几 KB 的白底字）；下限放宽防样本变动
-    expect(bytes.byteLength).toBeGreaterThan(10_000)
+  it('封面与 OPF 声明的孤立图字节一致，不是书名页那张题名图', () => {
+    // 真封面 image00509.jpeg 全书只有 OPF 声明引用它，任何页面都不用这张图；
+    // 书名页 part0000.xhtml 用的是 image00346.jpeg（白底题名图，曾经被误当封面）
+    const declared = readZipEntry(metaCoverBook, 'Images/image00509.jpeg')
+    expect(declared).toBeTruthy()
+    expect(coverBytes(book.meta.cover)).toEqual(declared)
   })
 
   it('标题是正常书名，不是文件名', () => {

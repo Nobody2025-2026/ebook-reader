@@ -109,16 +109,28 @@ const COVER_PAGE_MAX_LEN = 10_000
  * blob URL，孤立资源根本没有地址可拿，于是"找封面页→抠图"这条路整个落空。
  * 这类书退而求其次：加载 spine 首个章节（书名页）抠图。
  *
- * 且慢——书名页抠图也不可靠（《博弈与社会》二次打脸）：
- * 书名页里那张图是**白底题名图**（作者名一行字），访达/系统 Quick Look 显示的
- * 真封面是 OPF meta 声明的那张。所以 OPF 显式声明必须排在书名页**之前**：
- * 声明是权威的，书名页只是碰运气。
+ * 书名页抠图也不可靠（《博弈与社会》二次打脸）：书名页里那张图是白底题名图
+ * （一行作者名），访达/Quick Look 显示的真封面是 OPF 声明的那张。
+ *
+ * ================================ 最终顺序 ================================
+ * 不再"每本书各补一条规则"，而是跟访达/Quick Look 一样**认 OPF 的权威声明**，
+ * 一把梭覆盖所有书（实測两本真书都吃这套）：
+ *
+ *   ① OPF 声明的封面图（meta name="cover" / properties="cover-image"）→ 直读 zip 字节
+ *      这是规范里唯一"官方指定"的封面，访达就是这么取的，优先级最高。
+ *   ② 封面页抠图：id/href 含 cover/titlepage 的 html 页里抠 img（脏书的常见写法）
+ *   ③ 书名页抠图：spine 首项，最后保底（可能抠到题名图，聊胜于无）
+ * =========================================================================
  */
 async function safeCover(epub: EpubFile, input: File | string): Promise<string | undefined> {
   try {
+    // ① OPF 权威声明的封面图（访达/Quick Look 同款）
+    const declared = await opfDeclaredCover(epub, input)
+    if (declared) return declared
+
     const manifest = epub.getManifest()
 
-    // ① 找封面页：优先 properties="cover-image"，其次 id/href 含 cover/titlepage 的 html
+    // ② 封面页抠图
     const coverPage = Object.entries(manifest).find(([, item]) => {
       const isHtml = /(xhtml|html)/i.test(item.mediaType ?? '')
       if (!isHtml) return false
@@ -130,13 +142,8 @@ async function safeCover(epub: EpubFile, input: File | string): Promise<string |
       if (url) return url
     }
 
-    // ② OPF 显式声明的孤立封面图（自行解 zip 直读字节，绕过解析库的地址限制）
-    const declared = await opfDeclaredCover(epub, input)
-    if (declared) return declared
-
-    // ③ 兜底：书名页。spine 首项通常是书名页/封面页，但里面的图可能是题名图而非封面
-    //    （《博弈与社会》书名页就是白底"作者名"图）。加长度门槛：书名页很短，
-    //    正文第一章很长，别把正文里的插图抠成封面。
+    // ③ 兜底：书名页。加长度门槛：书名页很短，正文第一章很长，
+    //    别把正文里的插图抠成封面。
     const first = epub.getSpine()[0]
     if (first) {
       const { html } = await epub.loadChapter(first.id)
@@ -152,28 +159,59 @@ async function safeCover(epub: EpubFile, input: File | string): Promise<string |
 const COVER_IMAGE_MAX_BYTES = 8 * 1024 * 1024
 
 /**
- * ② 读 OPF 声明的孤立封面图：
- * <meta name="cover" content="X"/> 指向 manifest 里 id=X 的图片 item，
- * 该图不被任何页面引用 → 解析库不给它发地址 → 只能自己解 zip 拿字节。
+ * ① 读 OPF 声明的封面图（访达/Quick Look 同款规则）：
+ * 这张图常常**不被任何页面引用**，解析库便不给它发地址，只能自己解 zip 拿字节。
  * 返回 data URL（浏览器/Node 通用，且不像 blob URL 那样刷新即失效）。
  */
 async function opfDeclaredCover(
   epub: EpubFile,
   input: File | string,
 ): Promise<string | undefined> {
+  return coverFromOpfBytes(epub, await readInputBytes(input))
+}
+
+/**
+ * 按字节取 OPF 声明的封面图（拆出来是为了能脱离文件环境单测）。
+ * 候选按权威性排序：meta name="cover" 指定的 item → properties 含 cover-image
+ * → id/href 含 cover 的图片 item。
+ */
+export function coverFromOpfBytes(
+  epub: EpubFile,
+  bytes: Uint8Array,
+): string | undefined {
   try {
+    const manifest = epub.getManifest()
+    const isImage = (item?: ManifestItemLike): boolean =>
+      !!item && /^image\//i.test(item.mediaType ?? '')
+
+    // ① <meta name="cover" content="X"> 指向的 item（最权威）
     const coverId = epub.getMetadata().metas?.['cover']
-    if (!coverId) return undefined
-    const item = epub.getManifest()[coverId]
+    const byMeta = coverId ? (manifest[coverId] as ManifestItemLike | undefined) : undefined
+    // ② properties="cover-image" 的图片 item（EPUB 3 规范写法）
+    const byProperties = Object.values(manifest).find(
+      (item) => isImage(item) && item.properties?.includes('cover-image'),
+    )
+    // ③ id/href 带 cover 的图片 item（有些转换工具只靠命名）
+    const byName = Object.values(manifest).find(
+      (item) => isImage(item) && /cover/i.test(`${item.id} ${item.href ?? ''}`),
+    )
+
+    const item = [byMeta, byProperties, byName].find(isImage)
     if (!item) return undefined
-    const mime = /^image\//i.test(item.mediaType ?? '')
-      ? item.mediaType!
-      : /\.(png|jpe?g|gif|webp|svg)$/i.exec(item.href ?? '')?.[1]?.replace(/^jpeg$/i, 'jpeg')
-        ? `image/${(/\.([a-z0-9]+)$/i.exec(item.href ?? '')?.[1] ?? '').toLowerCase().replace('jpg', 'jpeg')}`
-        : undefined
+
+    const EXT_MIME: Record<string, string> = {
+      jpg: 'image/jpeg',
+      jpeg: 'image/jpeg',
+      png: 'image/png',
+      gif: 'image/gif',
+      webp: 'image/webp',
+      svg: 'image/svg+xml',
+    }
+    const ext = (/\.([a-z0-9]+)$/i.exec(item.href ?? '')?.[1] ?? '').toLowerCase()
+    const mime = /^image\//i.test(item.mediaType ?? '') ? item.mediaType! : EXT_MIME[ext]
     if (!mime) return undefined
 
-    const files = unzipSync(await readInputBytes(input))
+    const files = unzipSync(bytes)
     const opfPath = findOpfPath(files)
     const opfDir = opfPath?.includes('/') ? opfPath.slice(0, opfPath.lastIndexOf('/')) : ''
     const entry = findEntry(files, opfDir, item.href ?? '')
@@ -191,6 +229,14 @@ async function opfDeclaredCover(
   } catch {
     return undefined
   }
+}
+
+/** ManifestItem 的最小可用形状（只为类型约束，不依赖解析库的具体实现） */
+interface ManifestItemLike {
+  id: string
+  href?: string
+  mediaType?: string
+  properties?: string
 }
 
 /** 兼容 <img src> 与 SVG <image xlink:href> 两种写法 */

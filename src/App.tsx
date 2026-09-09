@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Library, type LibraryBook } from './components/Library'
 import { Reader } from './components/Reader'
-import { coverToDataUrl, isValidCoverDataUrl } from './lib/cover'
+import { COVER_VERSION, coverToDataUrl, isValidCoverDataUrl } from './lib/cover'
 import { openEpub, type OpenedBook } from './lib/epub'
 import { navigate, useHashRoute } from './lib/router'
 import {
@@ -26,8 +26,14 @@ async function backfillMissingCovers(
   afterOne: () => void,
 ): Promise<void> {
   for (const meta of metas) {
-    if (isValidCoverDataUrl(meta.cover) || backfillingCovers.has(meta.id) || noCoverConfirmed.has(meta.id))
+    // 跳过条件：封面有效**且**是用当前版本的算法提取的。
+    // 只看"有没有封面"不够——封面提错了也是合法 data URL，代码无从判断对错，
+    // 所以靠版本号识别：算法一改（COVER_VERSION +1），旧封面自动重取。
+    const coverIsCurrent =
+      isValidCoverDataUrl(meta.cover) && (meta.coverVersion ?? 0) >= COVER_VERSION
+    if (coverIsCurrent || backfillingCovers.has(meta.id) || noCoverConfirmed.has(meta.id)) {
       continue
+    }
     backfillingCovers.add(meta.id)
     try {
       const file = await getBookFile(meta.id, meta.fileName)
@@ -37,7 +43,7 @@ async function backfillMissingCovers(
         book = await openEpub(file)
         if (book.meta.cover) {
           const cover = await coverToDataUrl(book.meta.cover)
-          if (cover) await updateBookCover(meta.id, cover)
+          if (cover) await updateBookCover(meta.id, cover, COVER_VERSION)
         } else {
           // 这本书压根没封面图，标记一下，本会话不再重试
           noCoverConfirmed.add(meta.id)
@@ -98,6 +104,7 @@ export default function App() {
             title: book.meta.title,
             author: book.meta.author,
             cover,
+            coverVersion: cover ? COVER_VERSION : undefined,
             fileName: file.name,
             chapterCount: book.chapters.length,
             addedAt: Date.now(),
