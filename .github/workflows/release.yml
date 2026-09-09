@@ -33,6 +33,14 @@ jobs:
       - name: Install dependencies
         run: npm install
 
+      # 让打包文件名版本号自动跟随 git tag（去掉 v 前缀），
+      # 否则会永远用 tauri.conf.json 里写死的 version
+      - name: Set app version from tag
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          V2="$VERSION" node -e "const fs=require('fs');const p='src-tauri/tauri.conf.json';const c=JSON.parse(fs.readFileSync(p,'utf8'));c.version=process.env.V2;fs.writeFileSync(p,JSON.stringify(c,null,2)+'\n');"
+          echo "tauri.conf.json version -> $VERSION"
+
       # 编译通用二进制（arm64 + x64 合一），产出单个 .dmg
       # 不签名：保留未签名 DMG，README 已说明 Gatekeeper 打开方式
       - name: Build Tauri app (universal)
