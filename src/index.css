@@ -652,6 +652,50 @@ body {
   background: color-mix(in srgb, var(--accent) 8%, transparent);
 }
 
+/* 自定义字体：外层是 span（文件名 + 删除按钮），不再是单个 button */
+.settings-pill--custom {
+  flex: 0 0 auto;
+  min-width: 96px;
+  display: flex;
+  align-items: stretch;
+  padding: 0;
+  overflow: hidden;
+}
+.settings-pill--custom .settings-pill__label {
+  flex: 1;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  padding: 8px 6px;
+  max-width: 130px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.settings-pill--custom .settings-pill__remove {
+  flex: 0 0 22px;
+  border: none;
+  border-left: 1px solid var(--line);
+  background: transparent;
+  color: #999;
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+}
+.settings-pill--custom .settings-pill__remove:hover {
+  color: #e5484d;
+}
+
+/* 「＋自定义」虚线按钮 */
+.settings-pill--add {
+  flex: 0 0 auto;
+  padding: 8px 14px;
+  color: var(--accent);
+  border-style: dashed;
+}
+
 /* 主题色块预览 */
 .theme-swatch {
   display: flex;

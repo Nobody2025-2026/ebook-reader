@@ -19,13 +19,20 @@ import {
 import { makeExcerpt, newBookmarkId, type Bookmark } from '../lib/bookmark'
 import {
   DEFAULT_SETTINGS,
+  FONT_KEYS,
   FONT_LABELS,
-  FONT_STACKS,
+  customFontValue,
+  fontStack,
   loadSettings,
   saveSettings,
-  type FontKey,
+  type CustomFont,
   type ReaderSettings,
 } from '../lib/settings'
+import {
+  addCustomFont,
+  registerCustomFonts,
+  removeCustomFont,
+} from '../lib/customFont'
 
 // 块级元素选择器：覆盖小说/学术书里绝大多数情况。
 // 真实样本《涛动周期论》里就是这几种在撑页面。
@@ -112,6 +119,9 @@ export function Reader({ bookId, onExit }: Props) {
           loadSettings(),
         ])
         if (!cancelled) setSettings(savedSettings)
+        // 把用户上传的自定义字体注册进 document.fonts（FontFace API），
+        // 否则选中自定义字体时 CSS 找不到该 family 会回落到 sans-serif。
+        void registerCustomFonts(savedSettings.customFonts)
         const file = await getBookFile(bookId, meta?.fileName ?? 'book.epub')
         if (!file) throw new Error('找不到这本书的内容，可能已被清理')
 
@@ -247,6 +257,44 @@ export function Reader({ bookId, onExit }: Props) {
       return next
     })
   }, [])
+
+  // 自定义字体：隐藏的 file input + 选择/删除处理器
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
+
+  const handleFontFile = useCallback(
+    async (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0]
+      e.target.value = '' // 允许重复选同一文件
+      if (!file) return
+      try {
+        const meta = await addCustomFont(file)
+        await registerCustomFonts([meta])
+        updateSettings({
+          customFonts: [...settings.customFonts, meta],
+          fontFamily: customFontValue(meta.family),
+        })
+      } catch (err) {
+        setError(`字体加载失败：${err instanceof Error ? err.message : String(err)}`)
+      }
+    },
+    [settings.customFonts],
+  )
+
+  const handleRemoveFont = useCallback(
+    async (id: string) => {
+      const target = settings.customFonts.find((f) => f.id === id)
+      await removeCustomFont(id)
+      const patch: Partial<ReaderSettings> = {
+        customFonts: settings.customFonts.filter((f) => f.id !== id),
+      }
+      // 删掉当前选中的自定义字体时，回落到默认宋体
+      if (target && settings.fontFamily === customFontValue(target.family)) {
+        patch.fontFamily = DEFAULT_SETTINGS.fontFamily
+      }
+      updateSettings(patch)
+    },
+    [settings.customFonts, settings.fontFamily],
+  )
 
   // 目录跳转：标记目标，加载目标章（若未加载），定位滚动统一由下方 effect 处理
   const jumpTo = useCallback(
@@ -499,7 +547,7 @@ export function Reader({ bookId, onExit }: Props) {
             '--reader-font-size': `${settings.fontSize}px`,
             '--reader-line-height': `${settings.lineHeight}`,
             '--reader-page-margin': `${settings.pageMargin}px`,
-            '--reader-font-family': FONT_STACKS[settings.fontFamily],
+            '--reader-font-family': fontStack(settings.fontFamily),
           } as React.CSSProperties}
         >
           {showRestoreHint && (
@@ -619,7 +667,7 @@ export function Reader({ bookId, onExit }: Props) {
                   <span>字体</span>
                 </div>
                 <div className="settings-row">
-                  {(Object.keys(FONT_LABELS) as FontKey[]).map((f) => (
+                  {FONT_KEYS.map((f) => (
                     <button
                       key={f}
                       className={`settings-pill settings-pill--font${settings.fontFamily === f ? ' active' : ''}`}
@@ -628,6 +676,47 @@ export function Reader({ bookId, onExit }: Props) {
                       {FONT_LABELS[f]}
                     </button>
                   ))}
+                  {settings.customFonts.map((cf: CustomFont) => {
+                    const active = settings.fontFamily === customFontValue(cf.family)
+                    return (
+                      <span
+                        key={cf.id}
+                        className={`settings-pill settings-pill--font settings-pill--custom${active ? ' active' : ''}`}
+                      >
+                        <button
+                          type="button"
+                          className="settings-pill__label"
+                          title={cf.filename}
+                          onClick={() => updateSettings({ fontFamily: customFontValue(cf.family) })}
+                        >
+                          {cf.filename.replace(/\.[^.]+$/, '')}
+                        </button>
+                        <button
+                          type="button"
+                          className="settings-pill__remove"
+                          aria-label="删除自定义字体"
+                          title="删除该字体"
+                          onClick={() => void handleRemoveFont(cf.id)}
+                        >
+                          ×
+                        </button>
+                      </span>
+                    )
+                  })}
+                  <button
+                    type="button"
+                    className="settings-pill settings-pill--font settings-pill--add"
+                    onClick={() => fileInputRef.current?.click()}
+                  >
+                    ＋自定义
+                  </button>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept=".ttf,.otf,.woff,.woff2,font/ttf,font/otf,font/woff,font/woff2"
+                    style={{ display: 'none' }}
+                    onChange={(e) => void handleFontFile(e)}
+                  />
                 </div>
               </div>
 
