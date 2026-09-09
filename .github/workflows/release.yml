@@ -1,0 +1,46 @@
+name: Release Desktop App (macOS)
+
+# 桌面版发布流程，与网页版（deploy-pages.yml）完全独立：
+# 网页版 = push main 时部署到 GitHub Pages；
+# 桌面版 = 打 tag（v*.*.*）时在本 workflow 编译 macOS 应用并上传到 Releases。
+# 两者互不影响，不会互相覆盖。
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Install dependencies
+        run: npm install
+
+      # 编译通用二进制（arm64 + x64 合一），产出单个 .dmg
+      # 不签名：保留未签名 DMG，README 已说明 Gatekeeper 打开方式
+      - name: Build Tauri app (universal)
+        run: npm run tauri build -- --target universal-apple-darwin
+
+      - name: Upload release asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

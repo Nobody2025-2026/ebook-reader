@@ -5,6 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "tauri": "tauri",
+    "build:tauri": "vite build --base=/",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "test": "vitest run",
@@ -13,6 +15,7 @@
   },
   "dependencies": {
     "@lingo-reader/epub-parser": "^0.4.6",
+    "@tauri-apps/api": "^2",
     "fflate": "^0.8.3",
     "idb-keyval": "^6.3.0",
     "react": "^19.2.8",
@@ -20,6 +23,7 @@
     "zustand": "^5.0.15"
   },
   "devDependencies": {
+    "@tauri-apps/cli": "^2.11.4",
     "@testing-library/jest-dom": "^7.0.1",
     "@testing-library/react": "^16.3.3",
     "@types/node": "^26.5.0",
