@@ -18,6 +18,10 @@ dist/
 build/
 npm-debug.log*
 
+# 不提交 lock：macOS 生成的 package-lock.json 只含 darwin 平台可选依赖，
+# 会导致 ubuntu/macos CI 上 npm install 解析失败；交给各 CI 按平台重新解析。
+package-lock.json
+
 # Editors
 .idea/
 .vscode/
