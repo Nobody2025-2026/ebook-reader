@@ -7,7 +7,16 @@ import {
   type ReadingProgress,
 } from '../lib/progress'
 import { prepareChapterHtml } from '../lib/sanitize'
-import { getBookFile, getBookMeta, getProgress, saveProgress } from '../lib/storage'
+import {
+  addBookmark,
+  getBookFile,
+  getBookMeta,
+  getProgress,
+  listBookmarks,
+  removeBookmark,
+  saveProgress,
+} from '../lib/storage'
+import { makeExcerpt, newBookmarkId, type Bookmark } from '../lib/bookmark'
 import {
   DEFAULT_SETTINGS,
   FONT_LABELS,
@@ -46,6 +55,10 @@ export function Reader({ bookId, onExit }: Props) {
   const [settings, setSettings] = useState<ReaderSettings>(DEFAULT_SETTINGS)
   // 恢复位置提示 toast：短暂显示后自动消失
   const [showRestoreHint, setShowRestoreHint] = useState(false)
+  const [bookmarksOpen, setBookmarksOpen] = useState(false)
+  const [bookmarks, setBookmarks] = useState<Bookmark[]>([])
+  // 书签操作反馈（"已添加" / "这个位置已经有了"），2 秒后自动消失
+  const [bookmarkHint, setBookmarkHint] = useState('')
 
   const bookRef = useRef<OpenedBook | null>(null)
   const chaptersRef = useRef<ChapterRef[]>([])
@@ -112,6 +125,7 @@ export function Reader({ bookId, onExit }: Props) {
         weightsRef.current = book.chapterWeights
         setToc(book.toc)
         setTitle(book.meta.title)
+        setBookmarks(await listBookmarks(bookId))
 
         const start = Math.min(Math.max(progress?.chapterIndex ?? 0, 0), book.chapters.length - 1)
         setCurrentChapter(start)
@@ -258,6 +272,76 @@ export function Reader({ bookId, onExit }: Props) {
     [loadChapter],
   )
 
+  /** 当前视口顶压着的块。和滚动记进度用同一套定位，保证书签落在读者看到的位置 */
+  const getCurrentAnchor = useCallback((): { chapterIndex: number; blockIndex: number } => {
+    const container = containerRef.current
+    const blocks = collectBlocks()
+    if (!container || blocks.length === 0) {
+      // 还没滚过（刚打开）：退回当前章开头，至少不会存个瞎位置
+      return { chapterIndex: currentChapter, blockIndex: 0 }
+    }
+    return findAnchorBlock(blocks, container.getBoundingClientRect().top)
+  }, [collectBlocks, currentChapter])
+
+  /** 取某一块的文字做摘录，书签列表靠它认位置 */
+  const getBlockExcerpt = useCallback((chapterIndex: number, blockIndex: number): string => {
+    const chapterEl = nodesRef.current.get(chapterIndex)
+    const block = chapterEl?.querySelectorAll(BLOCK_SELECTOR)[blockIndex]
+    return makeExcerpt(block?.textContent)
+  }, [])
+
+  const flashBookmarkHint = useCallback((msg: string) => {
+    setBookmarkHint(msg)
+    setTimeout(() => setBookmarkHint(''), 2000)
+  }, [])
+
+  const addCurrentBookmark = useCallback(async () => {
+    const anchor = getCurrentAnchor()
+    const added = await addBookmark(bookId, {
+      id: newBookmarkId(),
+      chapterIndex: anchor.chapterIndex,
+      blockIndex: anchor.blockIndex,
+      excerpt: getBlockExcerpt(anchor.chapterIndex, anchor.blockIndex),
+      percent,
+      createdAt: Date.now(),
+    })
+    setBookmarks(await listBookmarks(bookId))
+    flashBookmarkHint(added ? '已添加书签' : '这个位置已经有书签了')
+  }, [bookId, getCurrentAnchor, getBlockExcerpt, percent, flashBookmarkHint])
+
+  const removeBm = useCallback(
+    async (id: string) => {
+      await removeBookmark(bookId, id)
+      setBookmarks(await listBookmarks(bookId))
+    },
+    [bookId],
+  )
+
+  /** 跳到书签位置：先确保章节已加载，再滚到那一块 */
+  const goToBookmark = useCallback(
+    async (bm: Bookmark) => {
+      setBookmarksOpen(false)
+      if (!loadedIdxRef.current.has(bm.chapterIndex)) {
+        await loadChapter(bm.chapterIndex)
+      }
+      // 和"恢复上次阅读位置"同一套重试节奏：
+      // 懒加载图片会陆续把内容顶下去，只滚一次往往不准。
+      const tries = [0, 80, 250, 700, 1800]
+      tries.forEach((delay) =>
+        setTimeout(() => {
+          const chapterEl = nodesRef.current.get(bm.chapterIndex)
+          const block = chapterEl?.querySelectorAll(BLOCK_SELECTOR)[bm.blockIndex] as
+            | HTMLElement
+            | undefined
+          if (block && typeof block.scrollIntoView === 'function') {
+            block.scrollIntoView({ block: 'start', behavior: 'auto' })
+          }
+        }, delay),
+      )
+    },
+    [loadChapter],
+  )
+
   // 加载完新章节后，若有待处理的目录跳转锚点，滚过去（锚点未就绪则重试）
   useEffect(() => {
     if (!pendingJump.current) return
@@ -392,6 +476,17 @@ export function Reader({ bookId, onExit }: Props) {
         >
           排版
         </button>
+        <button
+          className="btn btn-ghost"
+          onClick={() => {
+            setTocOpen(false)
+            setSettingsOpen(false)
+            setBookmarksOpen((v) => !v)
+          }}
+          title="书签"
+        >
+          书签{bookmarks.length > 0 ? ` ${bookmarks.length}` : ''}
+        </button>
         <span className="reader-percent">{percent.toFixed(1)}%</span>
       </header>
 
@@ -410,6 +505,7 @@ export function Reader({ bookId, onExit }: Props) {
           {showRestoreHint && (
             <div className="restore-hint">已回到上次阅读位置</div>
           )}
+          {bookmarkHint && <div className="restore-hint">{bookmarkHint}</div>}
           {loaded.map((chapter) => (
             <article
               key={chapter.index}
@@ -555,6 +651,55 @@ export function Reader({ bookId, onExit }: Props) {
                   ))}
                 </div>
               </div>
+            </div>
+          </aside>
+        )}
+
+        {bookmarksOpen && (
+          <aside className="bookmark-panel">
+            <div className="bookmark-header">
+              <span>书签{bookmarks.length > 0 ? `（${bookmarks.length}）` : ''}</span>
+              <button
+                className="btn btn-ghost"
+                onClick={() => setBookmarksOpen(false)}
+                title="关闭书签"
+              >
+                ×
+              </button>
+            </div>
+            <div className="bookmark-actions">
+              <button className="btn" onClick={() => void addCurrentBookmark()}>
+                ＋ 添加当前位置
+              </button>
+            </div>
+            <div className="bookmark-list">
+              {bookmarks.length === 0 ? (
+                <p className="bookmark-empty">
+                  还没有书签。读到想记住的地方，点上面的「添加当前位置」。
+                </p>
+              ) : (
+                bookmarks.map((bm) => (
+                  <div key={bm.id} className="bookmark-item">
+                    <button
+                      className="bookmark-jump"
+                      onClick={() => void goToBookmark(bm)}
+                      title={bm.excerpt}
+                    >
+                      <span className="bookmark-excerpt">{bm.excerpt}</span>
+                      <span className="bookmark-meta">
+                        第 {bm.chapterIndex + 1} 章 · {bm.percent.toFixed(1)}%
+                      </span>
+                    </button>
+                    <button
+                      className="bookmark-del"
+                      onClick={() => void removeBm(bm.id)}
+                      title="删除书签"
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))
+              )}
             </div>
           </aside>
         )}

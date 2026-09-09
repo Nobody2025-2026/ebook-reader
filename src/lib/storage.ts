@@ -2,6 +2,7 @@
 // 关键设计：**元数据和书文件分开存**——书库页只加载元数据，
 // 不把 70MB 的 Blob 读进内存，否则开个书库页就爆了。
 import { del, get, keys, set } from 'idb-keyval'
+import { hasBookmarkAt, sortBookmarks, type Bookmark } from './bookmark'
 import type { ReadingProgress } from './progress'
 
 export interface BookMeta {
@@ -17,6 +18,7 @@ export interface BookMeta {
 const KEY_META = 'meta:'
 const KEY_FILE = 'file:'
 const KEY_PROGRESS = 'progress:'
+const KEY_BOOKMARKS = 'bookmarks:'
 
 /**
  * 书文件以 ArrayBuffer 形式存，不存 Blob。
@@ -81,6 +83,32 @@ export async function clearProgress(id: string): Promise<void> {
 }
 
 /**
+ * 书签按"一本书一个数组"存。
+ * 书签数量有限（一本书几十个顶天），整存整取比逐条 key 简单，
+ * 而且删书时只要删一个 key，不会留孤儿。
+ */
+export async function listBookmarks(bookId: string): Promise<Bookmark[]> {
+  const list = await get<Bookmark[]>(KEY_BOOKMARKS + bookId)
+  return sortBookmarks(list ?? [])
+}
+
+/** 加书签。同一位置已有则不重复写，返回 false 让 UI 提示"这个位置已经有了" */
+export async function addBookmark(bookId: string, bm: Bookmark): Promise<boolean> {
+  const list = (await get<Bookmark[]>(KEY_BOOKMARKS + bookId)) ?? []
+  if (hasBookmarkAt(list, bm.chapterIndex, bm.blockIndex)) return false
+  await set(KEY_BOOKMARKS + bookId, sortBookmarks([...list, bm]))
+  return true
+}
+
+export async function removeBookmark(bookId: string, id: string): Promise<void> {
+  const list = (await get<Bookmark[]>(KEY_BOOKMARKS + bookId)) ?? []
+  await set(
+    KEY_BOOKMARKS + bookId,
+    list.filter((b) => b.id !== id),
+  )
+}
+
+/**
  * 补封面：给早期导入、cover 为空的书补上封面。
  * 只改 cover 字段，其余元数据原样保留（新增/删书都可能并发，做合并而非覆盖）。
  */
@@ -90,9 +118,10 @@ export async function updateBookCover(id: string, cover: string): Promise<void> 
   await set(KEY_META + id, { ...meta, cover })
 }
 
-/** 删书必须连带删进度，否则会留下孤儿记录 */
+/** 删书必须连带删进度和书签，否则会留下孤儿记录 */
 export async function deleteBook(id: string): Promise<void> {
   await del(KEY_META + id)
   await del(KEY_FILE + id)
   await del(KEY_PROGRESS + id)
+  await del(KEY_BOOKMARKS + id)
 }

@@ -8,11 +8,14 @@ import { Library } from '../src/components/Library'
 import { Reader } from '../src/components/Reader'
 import { webBookSource } from '../src/lib/bookSource'
 import {
+  addBookmark,
   clearProgress,
   deleteBook,
   getBookFile,
   getProgress,
+  listBookmarks,
   listBooks,
+  removeBookmark,
   saveBook,
   saveProgress,
   type BookMeta,
@@ -270,5 +273,115 @@ describe('导入流程', () => {
     fireEvent.click(screen.getByRole('button', { name: '导入书籍' }))
 
     expect(await screen.findByText('测试书')).toBeInTheDocument()
+  })
+})
+
+describe('书签存储', () => {
+  it('能加能列，且按正文顺序排（先章后块）', async () => {
+    await addBookmark('b1', {
+      id: 'x1',
+      chapterIndex: 1,
+      blockIndex: 0,
+      excerpt: '后',
+      percent: 50,
+      createdAt: 2,
+    })
+    await addBookmark('b1', {
+      id: 'x2',
+      chapterIndex: 0,
+      blockIndex: 3,
+      excerpt: '前',
+      percent: 10,
+      createdAt: 1,
+    })
+    expect((await listBookmarks('b1')).map((b) => b.excerpt)).toEqual(['前', '后'])
+  })
+
+  it('同一位置重复添加会被挡掉', async () => {
+    const base = {
+      chapterIndex: 0,
+      blockIndex: 2,
+      excerpt: '同位置',
+      percent: 5,
+      createdAt: 1,
+    }
+    expect(await addBookmark('b1', { ...base, id: 'a' })).toBe(true)
+    expect(await addBookmark('b1', { ...base, id: 'b' })).toBe(false)
+    expect((await listBookmarks('b1')).length).toBe(1)
+  })
+
+  it('删除只删指定那条', async () => {
+    await addBookmark('b1', {
+      id: 'k1',
+      chapterIndex: 0,
+      blockIndex: 0,
+      excerpt: '留',
+      percent: 1,
+      createdAt: 1,
+    })
+    await addBookmark('b1', {
+      id: 'k2',
+      chapterIndex: 0,
+      blockIndex: 1,
+      excerpt: '删',
+      percent: 2,
+      createdAt: 2,
+    })
+    await removeBookmark('b1', 'k2')
+    expect((await listBookmarks('b1')).map((b) => b.id)).toEqual(['k1'])
+  })
+
+  it('删书连带删书签，不留孤儿记录', async () => {
+    await saveBook(meta, new File(['a'], 'a.epub'))
+    await addBookmark('b1', {
+      id: 'k1',
+      chapterIndex: 0,
+      blockIndex: 0,
+      excerpt: 'x',
+      percent: 1,
+      createdAt: 1,
+    })
+    expect((await listBookmarks('b1')).length).toBe(1)
+
+    await deleteBook('b1')
+    expect(await listBookmarks('b1')).toEqual([])
+  })
+
+  it('没加过书签的书返回空数组，不炸', async () => {
+    expect(await listBookmarks('不存在的书')).toEqual([])
+  })
+})
+
+describe('阅读页书签', () => {
+  it('点「添加当前位置」后书签出现在列表里，再点删除可移除', async () => {
+    await saveBook(meta, new File(['epub-bytes'], 'book.epub'))
+    const { container } = render(<Reader bookId="b1" onExit={() => {}} />)
+
+    // 等书打开（工具栏按钮出现）
+    await waitFor(() => expect(screen.getByTitle('书签')).toBeTruthy())
+    fireEvent.click(screen.getByTitle('书签'))
+
+    // 空态
+    expect(await screen.findByText(/还没有书签/)).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '＋ 添加当前位置' }))
+
+    // 书签条目出现。摘录取自当前段落（mock 第一章正文就是 "c1 的正文"），
+    // 注意：正文里也有同样文字，所以只查书签面板内部，不用全局 getByText
+    await waitFor(() => {
+      expect(container.querySelectorAll('.bookmark-item').length).toBe(1)
+    })
+    expect(container.querySelector('.bookmark-excerpt')?.textContent).toBe('c1 的正文')
+
+    // 工具栏按钮上显示数量
+    await waitFor(() => {
+      expect(screen.getByTitle('书签').textContent).toContain('1')
+    })
+
+    // 删掉它，回到空态
+    fireEvent.click(screen.getByTitle('删除书签'))
+    await waitFor(() => {
+      expect(container.querySelectorAll('.bookmark-item').length).toBe(0)
+    })
   })
 })
