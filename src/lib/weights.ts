@@ -10,7 +10,7 @@
 import { unzipSync } from 'fflate'
 
 /** 从 container.xml 抠出 OPF 路径（EPUB 规范的固定入口） */
-function findOpfPath(files: Record<string, Uint8Array>): string | undefined {
+export function findOpfPath(files: Record<string, Uint8Array>): string | undefined {
   const container = files['META-INF/container.xml']
   if (!container) return undefined
   const xml = new TextDecoder().decode(container)
@@ -44,7 +44,7 @@ export function textLength(html: string): number {
  * - 中文文件名可能是 percent-encoded
  * 所以按候选清单逐个试，找不到就放弃这章。
  */
-function findEntry(
+export function findEntry(
   files: Record<string, Uint8Array>,
   opfDir: string,
   href: string,

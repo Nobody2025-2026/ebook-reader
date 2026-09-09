@@ -1,7 +1,8 @@
 // EPUB 解析层：封装 @lingo-reader/epub-parser，对上层只暴露"书"的概念。
 // 浏览器传 File，Node 传文件路径——同一套 API，为后期套 Tauri 留口。
 import { initEpubFile, type EpubFile } from '@lingo-reader/epub-parser'
-import { computeChapterTextLengths } from './weights'
+import { unzipSync } from 'fflate'
+import { computeChapterTextLengths, findEntry, findOpfPath } from './weights'
 
 export interface BookMeta {
   title: string
@@ -105,11 +106,15 @@ const COVER_PAGE_MAX_LEN = 10_000
  * 另一个坑（《博弈与社会》暴露的）：有些书用 OPF 的
  *   <meta name="cover" content="cover_img"/> + <item id="cover_img" href="…/x.jpeg"/>
  * 声明封面图，但那张图**不被任何页面引用**。解析库只把章节引用到的资源转成
- * blob URL，孤立资源根本没有地址可拿，于是"找封面页→抠图"这条路整个落空
- * （该书页面还全叫 part0000.xhtml，连 cover 字样都没有）。
+ * blob URL，孤立资源根本没有地址可拿，于是"找封面页→抠图"这条路整个落空。
  * 这类书退而求其次：加载 spine 首个章节（书名页）抠图。
+ *
+ * 且慢——书名页抠图也不可靠（《博弈与社会》二次打脸）：
+ * 书名页里那张图是**白底题名图**（作者名一行字），访达/系统 Quick Look 显示的
+ * 真封面是 OPF meta 声明的那张。所以 OPF 显式声明必须排在书名页**之前**：
+ * 声明是权威的，书名页只是碰运气。
  */
-async function safeCover(epub: EpubFile): Promise<string | undefined> {
+async function safeCover(epub: EpubFile, input: File | string): Promise<string | undefined> {
   try {
     const manifest = epub.getManifest()
 
@@ -125,14 +130,64 @@ async function safeCover(epub: EpubFile): Promise<string | undefined> {
       if (url) return url
     }
 
-    // ② 兜底：书名页。spine 首项通常是书名页/封面页，且它里面那张图基本就是封面。
-    //    加长度门槛：书名页很短，正文第一章很长，别把正文里的插图抠成封面。
+    // ② OPF 显式声明的孤立封面图（自行解 zip 直读字节，绕过解析库的地址限制）
+    const declared = await opfDeclaredCover(epub, input)
+    if (declared) return declared
+
+    // ③ 兜底：书名页。spine 首项通常是书名页/封面页，但里面的图可能是题名图而非封面
+    //    （《博弈与社会》书名页就是白底"作者名"图）。加长度门槛：书名页很短，
+    //    正文第一章很长，别把正文里的插图抠成封面。
     const first = epub.getSpine()[0]
     if (first) {
       const { html } = await epub.loadChapter(first.id)
       if (html.length < COVER_PAGE_MAX_LEN) return matchChapterImage(html)
     }
     return undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** 封面图字节数上限：正常封面几十~几百 KB，超大的多半不是封面，别做天价 data URL */
+const COVER_IMAGE_MAX_BYTES = 8 * 1024 * 1024
+
+/**
+ * ② 读 OPF 声明的孤立封面图：
+ * <meta name="cover" content="X"/> 指向 manifest 里 id=X 的图片 item，
+ * 该图不被任何页面引用 → 解析库不给它发地址 → 只能自己解 zip 拿字节。
+ * 返回 data URL（浏览器/Node 通用，且不像 blob URL 那样刷新即失效）。
+ */
+async function opfDeclaredCover(
+  epub: EpubFile,
+  input: File | string,
+): Promise<string | undefined> {
+  try {
+    const coverId = epub.getMetadata().metas?.['cover']
+    if (!coverId) return undefined
+    const item = epub.getManifest()[coverId]
+    if (!item) return undefined
+    const mime = /^image\//i.test(item.mediaType ?? '')
+      ? item.mediaType!
+      : /\.(png|jpe?g|gif|webp|svg)$/i.exec(item.href ?? '')?.[1]?.replace(/^jpeg$/i, 'jpeg')
+        ? `image/${(/\.([a-z0-9]+)$/i.exec(item.href ?? '')?.[1] ?? '').toLowerCase().replace('jpg', 'jpeg')}`
+        : undefined
+    if (!mime) return undefined
+
+    const files = unzipSync(await readInputBytes(input))
+    const opfPath = findOpfPath(files)
+    const opfDir = opfPath?.includes('/') ? opfPath.slice(0, opfPath.lastIndexOf('/')) : ''
+    const entry = findEntry(files, opfDir, item.href ?? '')
+    if (!entry || entry.byteLength === 0 || entry.byteLength > COVER_IMAGE_MAX_BYTES) {
+      return undefined
+    }
+
+    // 分块转 binary，避免 apply 栈溢出
+    let binary = ''
+    const CHUNK = 0x8000
+    for (let i = 0; i < entry.length; i += CHUNK) {
+      binary += String.fromCharCode(...entry.subarray(i, i + CHUNK))
+    }
+    return `data:${mime};base64,${btoa(binary)}`
   } catch {
     return undefined
   }
@@ -222,7 +277,7 @@ export async function openEpub(
       title: normalizeTitle(metadata.title),
       author: metadata.creator?.[0]?.contributor ?? '',
       language: metadata.language ?? '',
-      cover: await safeCover(epub),
+      cover: await safeCover(epub, input),
     },
     chapters,
     chapterWeights,

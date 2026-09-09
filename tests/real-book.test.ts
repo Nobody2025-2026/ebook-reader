@@ -102,8 +102,18 @@ describe.skipIf(!hasMetaCoverBook)('真实样本《博弈与社会》（封面�
     rmSync(saveDir, { recursive: true, force: true })
   })
 
-  it('封面兜底能拿到地址：该书没有 cover 命名的页面，只能走书名页', () => {
-    expect(book.meta.cover).toBeTruthy()
+  it('封面走 OPF meta 声明的孤立图（data URL + JPEG 魔数），不是书名页题名图', () => {
+    const cover = book.meta.cover
+    expect(cover).toBeTruthy()
+    // 必须是 data URL —— 旧实现返回的是书名页抠出来的图地址（题名图，不是封面）
+    expect(cover).toMatch(/^data:image\/jpeg;base64,/)
+    // 解出字节校验 JPEG 魔数（FFD8），确保是真图而不是空壳
+    const base64 = (cover as string).slice('data:image/jpeg;base64,'.length)
+    const bytes = Uint8Array.from(atob(base64), (ch) => ch.charCodeAt(0))
+    expect(bytes[0]).toBe(0xff)
+    expect(bytes[1]).toBe(0xd8)
+    // 真封面比题名图大得多（题名图只有几 KB 的白底字）；下限放宽防样本变动
+    expect(bytes.byteLength).toBeGreaterThan(10_000)
   })
 
   it('标题是正常书名，不是文件名', () => {
