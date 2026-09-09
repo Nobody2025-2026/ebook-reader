@@ -3,6 +3,10 @@ import react from '@vitejs/plugin-react'
 
 export default defineConfig({
   plugins: [react()],
+  // GitHub Pages 部署在子路径下（https://<user>.github.io/ebook-reader/），
+  // 必须设 base，否则打包产物的资源引用会指向根路径而 404。
+  // 本地 `npm run dev` 不受影响；只在 `npm run build` 时生效。
+  base: '/ebook-reader/',
   test: {
     environment: 'jsdom',
     globals: true,
