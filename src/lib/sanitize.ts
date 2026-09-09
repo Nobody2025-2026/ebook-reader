@@ -23,6 +23,35 @@ export function lazyLoadImages(html: string): string {
   })
 }
 
+/**
+ * 摘掉内联 style 里的排版声明（font-size / font-family / line-height /
+ * letter-spacing / color），其余声明（如 text-align、font-weight）原样保留。
+ *
+ * 为什么要摘：真实样本《涛动周期论》每个段落都焊死了
+ *   <span style="font-size:16px;font-family:'PingFang SC';color:rgb(0,0,0)">
+ * 内联样式的优先级高于阅读器的 .chapter 类规则，结果是——
+ *   - 字号被钉死在 16px，调字号滑条完全没反应
+ *   - 字体被钉死在苹方，切楷体/圆体毫无变化
+ *   - 行距的基准字号固定，怎么调都"不对劲"
+ *   - color:rgb(0,0,0) 在夜间模式下直接变成黑底黑字
+ * 摘掉之后，标题由 h1~h6 标签 + 阅读器 CSS 的 em 相对值接管，
+ * 既恢复了层级，又能跟随读者的字号设置一起缩放。
+ */
+const TYPO_PROP_RE = /^(font-size|font-family|line-height|letter-spacing|color)\s*:/i
+
+export function stripInlineTypography(html: string): string {
+  return html.replace(/\sstyle\s*=\s*("([^"]*)"|'([^']*)')/gi, (match, _quoted, dq, sq) => {
+    const raw: string = dq ?? sq ?? ''
+    const kept = raw
+      .split(';')
+      .map((decl) => decl.trim())
+      .filter((decl) => decl && !TYPO_PROP_RE.test(decl))
+      .join('; ')
+    // 整个 style 只剩排版声明时，把属性整个丢掉，别留个空的 style=""
+    return kept ? ` style="${kept}"` : ''
+  })
+}
+
 export function prepareChapterHtml(html: string): string {
-  return lazyLoadImages(sanitizeChapterHtml(html))
+  return lazyLoadImages(stripInlineTypography(sanitizeChapterHtml(html)))
 }

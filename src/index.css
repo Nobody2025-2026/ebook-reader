@@ -287,9 +287,41 @@ body {
   height: auto;
 }
 
-.chapter img {
-  max-width: 100%;
-  height: auto;
+/* ---------- 压住 EPUB 自带的排版样式 ---------- */
+/* 内联 style 已在 sanitize 阶段摘掉（见 stripInlineTypography），
+   但 EPUB 的外部样式表（如 style0001.css）同样会用类规则钉死字号/字体，
+   且特异性可能高于 .chapter。这里用 !important 统一兜住，
+   保证读者的字号、字体、行距、主题配色一定生效。
+   注意：只接管排版，不动 text-align / font-weight 等语义样式。 */
+.chapter * {
+  font-family: inherit !important;
+  font-size: inherit !important;
+  line-height: inherit !important;
+  color: inherit !important;
+}
+
+/* 标题恢复到相对层级：em 会跟随读者的字号设置一起缩放 */
+.chapter h1 {
+  font-size: 1.7em !important;
+}
+
+.chapter h2 {
+  font-size: 1.45em !important;
+}
+
+.chapter h3 {
+  font-size: 1.25em !important;
+}
+
+.chapter h4,
+.chapter h5,
+.chapter h6 {
+  font-size: 1.1em !important;
+}
+
+/* 链接保留可辨识的颜色，别被 inherit 抹平 */
+.chapter a {
+  color: var(--accent) !important;
 }
 
 /* ---------- 阅读主题（护眼 / 夜间） ---------- */
