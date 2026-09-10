@@ -164,6 +164,26 @@ describe.skipIf(!hasMetaCoverBook)('真实样本《博弈与社会》（封面�
     expect(book.meta.title).toBeTruthy()
     expect(book.meta.title).not.toMatch(/\.epub$/i)
   })
+
+  it('书内跨章链接能解析成「章序号 + 锚点」（脚注 / 目录跳转的基础）', () => {
+    // part0003.xhtml（index 3，目录）里挂着 <a href="part0004.xhtml#a005">。
+    // 真实 spine href 是 Text/part0004.xhtml（相对 OPF），而正文 href 是相对
+    // 当前章的；解析库的 resolveHref 对这类正文链接一律返回 undefined，
+    // 靠自建归一化表兜住 —— 否则点脚注根本找不到目标。
+    expect(book.resolveHrefToChapter('part0004.xhtml#a005', 3)).toEqual({
+      chapterIndex: 4,
+      selector: '[id="a005"], [name="a005"]',
+    })
+    // 纯章内锚点留在当前章
+    expect(book.resolveHrefToChapter('#a005', 4)).toEqual({
+      chapterIndex: 4,
+      selector: '[id="a005"], [name="a005"]',
+    })
+    // 带 ../ 的相对路径也能归一化
+    expect(book.resolveHrefToChapter('../Text/part0005.xhtml#w1', 4)?.chapterIndex).toBe(5)
+    // 解析不到的目标返回 undefined（调用方据此仍然阻止默认跳转）
+    expect(book.resolveHrefToChapter('nope.xhtml#x', 3)).toBeUndefined()
+  })
 })
 
 // 第三、四本真实样本：转换版 EPUB 的"轻量边缘章"陷阱（z-library 常见）。

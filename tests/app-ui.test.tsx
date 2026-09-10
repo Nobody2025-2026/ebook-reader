@@ -21,7 +21,7 @@ import {
   type BookMeta,
 } from '../src/lib/storage'
 
-const { openEpubMock, mockBook, furnitureBook, divOnlyBook } = vi.hoisted(() => {
+const { openEpubMock, mockBook, furnitureBook, divOnlyBook, linkBook } = vi.hoisted(() => {
   const openEpubMock = vi.fn()
   const mockBook = {
     meta: { title: '测试书', author: '主上大人', language: 'zh', cover: undefined },
@@ -76,7 +76,39 @@ const { openEpubMock, mockBook, furnitureBook, divOnlyBook } = vi.hoisted(() => 
     resolveHref: () => undefined,
     destroy: vi.fn(),
   }
-  return { openEpubMock, mockBook, furnitureBook, divOnlyBook }
+  // 脚注书样本：正文里带书内链接（同章锚点 + 跨章锚点），守
+  // "点脚注不能把路由踢回书库" —— HashRouter 会把 <a href="#fn1"> 的默认跳转
+  // 当成路由变更，parseHash 认不出 read/xxx 就直接渲染书库。
+  const linkBook = {
+    meta: { title: '脚注书', author: 'x', language: 'zh', cover: undefined },
+    chapters: [
+      { id: 'c1', label: '第一章' },
+      { id: 'c2', label: '第二章' },
+    ],
+    chapterWeights: [100, 100],
+    toc: [],
+    loadChapter: async (id: string) => ({
+      html:
+        id === 'c1'
+          ? '<p>正文一<a href="#fn1">同章注</a></p><p><a href="c2.xhtml#fn2">跨章注</a></p>'
+          : '<p>c2 的正文</p><p id="fn2">这是注释</p>',
+      css: [],
+    }),
+    // 真实实现由 epub 层解析；mock 用固定映射模拟同样的语义
+    resolveHrefToChapter: (href: string, from?: number) => {
+      const at = href.indexOf('#')
+      const path = at >= 0 ? href.slice(0, at) : href
+      const frag = at >= 0 ? href.slice(at + 1) : ''
+      const selector = frag ? `[id="${frag}"]` : undefined
+      if (!path) return from === undefined ? undefined : { chapterIndex: from, selector }
+      const map: Record<string, number> = { 'c1.xhtml': 0, 'c2.xhtml': 1 }
+      const index = map[path]
+      return index === undefined ? undefined : { chapterIndex: index, selector }
+    },
+    resolveHref: () => undefined,
+    destroy: vi.fn(),
+  }
+  return { openEpubMock, mockBook, furnitureBook, divOnlyBook, linkBook }
 })
 
 vi.mock('../src/lib/epub', () => ({ openEpub: openEpubMock }))
@@ -92,6 +124,8 @@ const meta: BookMeta = {
 
 beforeEach(async () => {
   await clear()
+  // 有些用例会改 hash（验证路由不被劫持），这里统一复位，避免污染后续用例
+  window.location.hash = ''
   openEpubMock.mockResolvedValue(mockBook)
 })
 
@@ -248,6 +282,54 @@ describe('阅读器', () => {
       fireEvent.scroll(scroller)
 
       await waitFor(() => expect(screen.getByText('c1 的正文')).toBeInTheDocument())
+    } finally {
+      if (SH) Object.defineProperty(Element.prototype, 'scrollHeight', SH)
+      else Reflect.deleteProperty(Element.prototype, 'scrollHeight')
+      if (CH) Object.defineProperty(Element.prototype, 'clientHeight', CH)
+      else Reflect.deleteProperty(Element.prototype, 'clientHeight')
+    }
+  })
+
+  // ↓↓ 回归用例：2026-09-10 报的"点脚注不跳注释、反而回到书库"
+  it('点书内脚注链接不会把路由踢回书库（hash 不能被改）', async () => {
+    await saveBook(meta, new File(['a'], 'book.epub'))
+    openEpubMock.mockResolvedValue(linkBook)
+    window.location.hash = '#/read/b1'
+
+    const { container } = render(<Reader bookId="b1" onExit={vi.fn()} />)
+    await waitFor(() => expect(container.querySelector('a[href="#fn1"]')).toBeTruthy())
+
+    // 取当前 DOM 里的元素点击：别用 findByText —— 它在 React 异步重渲染的间隙
+    // 会返回已脱离文档的 stale 引用（实测 inBody=false），事件冒泡不到 React root，
+    // onClick 根本不触发，测试会得出"功能没实现"的假结论。
+    const live = container.querySelector('a[href="#fn1"]') as HTMLAnchorElement
+    // 浏览器默认跳转被拦住：fireEvent 返回 false == defaultPrevented
+    expect(fireEvent.click(live)).toBe(false)
+    // hash 仍是阅读页路由，没被改成 "#fn1"（否则 App 会渲染书库）
+    expect(window.location.hash).toContain('read')
+    expect(window.location.hash).not.toContain('fn1')
+  })
+
+  it('点跨章脚注会加载并跳到目标章', async () => {
+    await saveBook(meta, new File(['a'], 'book.epub'))
+    openEpubMock.mockResolvedValue(linkBook)
+
+    // 给滚动容器真实尺寸：jsdom 里 scrollHeight 恒为 0 → remain 永远低于阈值 →
+    // pump 会把后续章节一口气补完，就测不出"靠点击触发跨章加载"了。
+    const SH = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollHeight')
+    const CH = Object.getOwnPropertyDescriptor(Element.prototype, 'clientHeight')
+    Object.defineProperty(Element.prototype, 'scrollHeight', { configurable: true, get: () => 10000 })
+    Object.defineProperty(Element.prototype, 'clientHeight', { configurable: true, get: () => 600 })
+    try {
+      const { container } = render(<Reader bookId="b1" onExit={vi.fn()} />)
+      await waitFor(() => expect(container.querySelector('a[href="c2.xhtml#fn2"]')).toBeTruthy())
+      // 此时目标章尚未加载（证明后面的加载确实是"点击"引发的）
+      expect(screen.queryByText('c2 的正文')).not.toBeInTheDocument()
+
+      const live = container.querySelector('a[href="c2.xhtml#fn2"]') as HTMLAnchorElement
+      fireEvent.click(live)
+      // 目标章（c2）被异步加载并渲染出来
+      await waitFor(() => expect(screen.getByText('c2 的正文')).toBeInTheDocument())
     } finally {
       if (SH) Object.defineProperty(Element.prototype, 'scrollHeight', SH)
       else Reflect.deleteProperty(Element.prototype, 'scrollHeight')
