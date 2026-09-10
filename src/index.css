@@ -395,15 +395,6 @@ body {
   }
 }
 
-.chapter-sentinel {
-  max-width: 680px;
-  margin: 0 auto;
-  padding: 24px 0 64px;
-  color: var(--muted);
-  font-size: 13px;
-  text-align: center;
-}
-
 /* ---------- 目录抽屉 ---------- */
 .reader-body {
   flex: 1;

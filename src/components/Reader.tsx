@@ -73,7 +73,11 @@ export function Reader({ bookId, onExit }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const nodesRef = useRef(new Map<number, HTMLElement>())
   const loadedIdxRef = useRef(new Set<number>())
-  const loadingRef = useRef(false)
+  // 正在加载中的章节（按 index 记，不再是"全局忙"的布尔量）。
+  // 用布尔量的老写法会把并发的加载请求**直接丢掉**，详见 pump() 上方注释。
+  const inFlightRef = useRef(new Set<number>())
+  // 加载链是否正在跑（防止重入；注意它只挡重入，不丢弃请求）
+  const pumpRef = useRef(false)
   // 待恢复的进度：chapter + block 双重定位。delta 不存（懒加载图片会让像素位置飘）。
   const pendingRestore = useRef<{ chapterIndex: number; blockIndex: number } | null>(null)
   // 目录点击要跳转的章内锚点选择器（空 = 跳章开头）
@@ -82,28 +86,83 @@ export function Reader({ bookId, onExit }: Props) {
   const hasRestoredRef = useRef(false)
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const latestProgress = useRef<ReadingProgress | null>(null)
-  const sentinelRef = useRef<HTMLDivElement | null>(null)
 
-  const loadChapter = useCallback(async (index: number) => {
+  /** @returns 这一章是否真的被加载了（重复请求 / 失败都返回 false） */
+  const loadChapter = useCallback(async (index: number): Promise<boolean> => {
     const book = bookRef.current
     const chapters = chaptersRef.current
-    if (!book || !chapters.length) return
-    if (index < 0 || index >= chapters.length) return
-    if (loadedIdxRef.current.has(index) || loadingRef.current) return
-
-    loadingRef.current = true
+    if (!book || !chapters.length) return false
+    if (index < 0 || index >= chapters.length) return false
+    if (loadedIdxRef.current.has(index)) return false
+    // 同一章只发一次请求；但**不同章**可以排队，不再像以前那样直接丢弃
+    if (inFlightRef.current.has(index)) return false
+    inFlightRef.current.add(index)
     try {
       const { html, css } = await book.loadChapter(chapters[index].id)
       loadedIdxRef.current.add(index)
       setLoaded((prev) =>
         [...prev, { index, html: prepareChapterHtml(html), css }].sort((a, b) => a.index - b.index),
       )
+      return true
     } catch (err) {
       setError(`第 ${index + 1} 章加载失败：${err instanceof Error ? err.message : String(err)}`)
+      return false
     } finally {
-      loadingRef.current = false
+      inFlightRef.current.delete(index)
     }
   }, [])
+
+  // ===================== 连续加载下一章（替代旧的 IntersectionObserver） =====================
+  //
+  // 旧实现有两个致命缺陷，合起来就是"翻页卡死、只能上翻"：
+  //   1. 守卫 `|| loadingRef.current` 会把**正在忙时的并发请求直接丢掉**——
+  //      不是排队，是丢弃；
+  //   2. IntersectionObserver 只在**交叉状态发生变化**时回调。effect 依赖 [loaded]，
+  //      每加载一章就 disconnect + 重新 observe，若此时哨兵仍在视口内（状态没变），
+  //     浏览器不会再补发一次 isIntersecting。
+  // 于是"请求被丢弃 + 之后再也没有回调" → 加载链永久断开，滚到底就顶住；
+  // 只有把哨兵滚出视口再滚回来（状态变化）才有概率恢复 —— 正好对上主上大人描述的
+  // "下滚一段距离后有概率恢复，又有概率继续卡住"。
+  //
+  // 新方案：滚动位置是**连续可查**的（不依赖事件是否补发），
+  // 每次加载完再复查一次，天然自愈；忙的时候靠串行循环排队，不会丢请求。
+  const PRELOAD_REMAIN_PX = 1200
+
+  /** 等浏览器把新章节渲染进 DOM，否则量到的 scrollHeight 还是旧的 */
+  const nextFrame = (): Promise<void> =>
+    new Promise((resolve) => {
+      if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => resolve())
+      else setTimeout(resolve, 0)
+    })
+
+  const needMore = useCallback((): boolean => {
+    const chapters = chaptersRef.current
+    if (!chapters.length) return false
+    if (!loadedIdxRef.current.size) return false // 首章由打开流程负责，pump 不抢
+    const next = Math.max(...loadedIdxRef.current) + 1
+    if (next >= chapters.length) return false
+    const container = containerRef.current
+    if (!container) return true
+    const remain = container.scrollHeight - container.scrollTop - container.clientHeight
+    return remain < PRELOAD_REMAIN_PX
+  }, [])
+
+  const pump = useCallback(async () => {
+    if (pumpRef.current) return
+    pumpRef.current = true
+    try {
+      // 上限兜底：极端情况（全是空章）也不至于把整本书一次塞进 DOM
+      for (let guard = 0; guard < 50; guard++) {
+        if (!needMore()) break
+        const next = Math.max(...loadedIdxRef.current) + 1
+        const ok = await loadChapter(next)
+        if (!ok) break
+        await nextFrame()
+      }
+    } finally {
+      pumpRef.current = false
+    }
+  }, [loadChapter, needMore])
 
   // 打开书
   useEffect(() => {
@@ -246,7 +305,10 @@ export function Reader({ bookId, onExit }: Props) {
     }
     if (saveTimer.current) clearTimeout(saveTimer.current)
     saveTimer.current = setTimeout(flushProgress, 500)
-  }, [collectBlocks, flushProgress])
+
+    // 顺手补加载：滚动位置是连续量，不像 IntersectionObserver 那样可能漏掉回调
+    void pump()
+  }, [collectBlocks, flushProgress, pump])
 
   // 更新排版设置：立即生效 + 防抖落盘（拖动滑条会高频触发）
   const updateSettings = useCallback((patch: Partial<ReaderSettings>) => {
@@ -425,23 +487,12 @@ export function Reader({ bookId, onExit }: Props) {
     return () => timers.forEach(clearTimeout)
   }, [loaded])
 
-  // 滚到底部附近就加载下一章
+  // 每加载完一章就复查一次是否还需要下一章。
+  // 关键是这个复查**由 loaded 驱动**：即使上一次因为各种时序错过了触发条件，
+  // 只要内容有变化就会重新尝试，加载链断不了。
   useEffect(() => {
-    const sentinel = sentinelRef.current
-    const container = containerRef.current
-    if (!sentinel || !container || typeof IntersectionObserver === 'undefined') return
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries.some((e) => e.isIntersecting)) {
-          const next = Math.max(...loadedIdxRef.current) + 1
-          void loadChapter(next)
-        }
-      },
-      { root: container, rootMargin: '600px' },
-    )
-    observer.observe(sentinel)
-    return () => observer.disconnect()
-  }, [loaded, loadChapter])
+    void pump()
+  }, [loaded, pump])
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -570,9 +621,6 @@ export function Reader({ bookId, onExit }: Props) {
               <div dangerouslySetInnerHTML={{ __html: chapter.html }} />
             </article>
           ))}
-          <div ref={sentinelRef} className="chapter-sentinel">
-            加载下一章…
-          </div>
         </div>
 
         {tocOpen && (

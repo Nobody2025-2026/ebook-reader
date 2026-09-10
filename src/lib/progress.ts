@@ -47,6 +47,16 @@ export function findAnchorBlock(
     if (block.top <= viewportTop + 1) result = block
     else break
   }
+
+  // 退化情形兜底：所有块 top 完全相同（jsdom 这类没有真实布局的环境，
+  // getBoundingClientRect 一律返回 0）。此时"视口顶压在哪一段"本就无法判定，
+  // 原逻辑会一路落到最后一章——但下一章往往只是被预加载机制提前塞进 DOM，
+  // 读者其实还在第一章。退化时直接取文档最顶部的块（已加载的第一章第一段），
+  // 与"刚打开、还没真正滚动"的语义一致。真实布局下各块 top 必有落差，不会触发。
+  if (blocks.every((b) => b.top === blocks[0].top)) {
+    return { chapterIndex: blocks[0].chapterIndex, blockIndex: blocks[0].blockIndex }
+  }
+
   return { chapterIndex: result.chapterIndex, blockIndex: result.blockIndex }
 }
 
