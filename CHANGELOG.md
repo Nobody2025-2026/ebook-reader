@@ -44,6 +44,12 @@
 
   新方案：滚动位置是**连续可查量**，不依赖事件是否补发。`loadChapter` 改用 `inFlightRef`（按章节 index 记的集合）替代全局布尔量——同章只发一次请求，但不同章可排队；新增 `pump()` 从已加载末尾往后补相邻未加载章，每次加载完由 `[loaded]` effect 复查，天然自愈；`handleScroll` 触发 `pump`，移除 `IntersectionObserver` 与哨兵 div。
 
+- **进度被存到末尾的目录页，再次打开"只有目录、翻不动"**（样本：《The Art of Focus》《策略思维》）
+
+  这两本转换版 EPUB 都把**全书正文塞进单个 spine 项**，另外挂一个只有千把字的目录页（`nav.xhtml` / `Contents`），且它在《The Art of Focus》里排在 spine **最后**。旧逻辑把这类"边缘轻量章"当普通正文处理：滚到末尾时 `pump()` 会把目录页也加载进来当正文渲染（一长串链接），进度条随之顶到 100%，`progress.chapterIndex` 也被存成那个目录页的下标——下次打开就正好停在目录页上，而它是最后一项，于是"翻不动"。
+
+  新增 `detectContentRange()`（`src/lib/progress.ts`）：按字数从 spine 两端各刮掉明显低于平均值（< 5%）的边缘章，得到真正的**正文区间**。三处据此收敛：① `pump()` 不再自动加载正文区间**之后**的章节（目录页不再被当正文渲染）；② 百分比只在正文区间内折算，落在区间之前算 0%、之后算 100%；③ 记进度与恢复进度都把章节下标夹回正文区间——即使读者滚过目录页，落盘的仍是最近的正文位置。首次打开仍从封面开始，不会一上来就跳过封面。
+
 ### 新增
 
 - **自定义字体上传**
@@ -63,6 +69,9 @@
 - 新增 `tests/guide.test.ts`（空 `<guide></guide>` 与自闭合 `<guide/>` 被 `fixEpubBytes` 剥离、带内容的 guide 与无 guide 返回 `undefined`）。
 - `tests/epub.test.ts`、`tests/real-book.test.ts` 图片断言改为校验 `blob:` / `data:` 前缀（不再误判为 `EPUB/` 开头）。
 - `tests/app-ui.test.tsx` 阅读器用例里 `findByText('c1 的正文')` 等改为 `waitFor(() => expect(screen.getByText(...)).toBeInTheDocument())`。原因：`findByText` 底层 `getBy` 在 jsdom 下首检拿不到元素时直接返回 `null` 而不重试，openEpub 异步渲染与查询首检偶发竞态会导致整批测试不稳定；`expect(...).toBeInTheDocument()` 找不到时会抛错，交给 `waitFor` 重试即可稳过。
+- 新增 `detectContentRange` 与"带正文区间"的 `computeWeightedPercent` 单测（`tests/logic.test.ts`），断言用两本真书的实际权重分布，锁定"目录页划出正文区间"的切分规则。
+- `tests/app-ui.test.tsx` 增加"脏书"回归用例：进度落在末尾 nav 上时，打开的是正文而不是目录；正文区间之后的 nav 页不会被自动加载。
+- 新增第三、四本真实样本《The Art of Focus》《策略思维》进入 `tests/real-book.test.ts`，守住"轻量目录页划出正文区间"这条路（与既有样本一样，缺书自动跳过）。
 
 ### 文档
 
