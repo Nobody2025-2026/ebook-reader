@@ -118,9 +118,9 @@ describe('release-notes 对真实 CHANGELOG 的冒烟', () => {
     expect(dropped).toContain('测试')
   })
 
-  it('0.1.3（待发布）也能抽出「新增 / 修复」，并标记 pending', () => {
+  it('0.1.3 已补发布日期，抽出「新增 / 修复」且同名小节合并为一', () => {
     const r = extractReleaseNotes(changelog, '0.1.3')
-    expect(r.pending).toBe(true)
+    expect(r.pending).toBe(false) // 已发布：标题不再是「待发布」
     expect(r.body).toContain('阅读时长统计')
     expect(r.body).toContain('高亮')
     expect(r.body.match(/^### 新增$/gm)).toHaveLength(1)
