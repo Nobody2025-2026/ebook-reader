@@ -7,6 +7,14 @@ export default defineConfig({
   // 必须设 base，否则打包产物的资源引用会指向根路径而 404。
   // 本地 `npm run dev` 不受影响；只在 `npm run build` 时生效。
   base: '/ebook-reader/',
+  // 固化开发态端口，避免 vite 在 5173 被占用时悄悄退到 5181/5182。
+  // 否则 http://localhost:5173 与 http://localhost:5181 是**两个不同 origin**，
+  // 各自独立 IndexedDB，会导致「关掉重启后书库看起来全丢了」（数据其实没删，只是访问到了空库）。
+  // 用 strictPort：端口被占就直接报错退出，方便 `pkill -f vite` 清掉旧进程再启动，而不是悄悄丢库。
+  server: {
+    port: 5173,
+    strictPort: true,
+  },
   test: {
     environment: 'jsdom',
     globals: true,
