@@ -414,6 +414,43 @@ export function Reader({ bookId, onExit }: Props) {
     [loadChapter],
   )
 
+  /**
+   * 正文里的 <a> 统一在容器上做事件委托：书内脚注 / 目录锚点自己跳转，
+   * 外链新标签打开。
+   *
+   * ⚠️ 关键：必须 preventDefault。本项目用 HashRouter，路由就存在
+   * location.hash 里；一旦让浏览器执行 <a href="#fn1"> 的默认跳转，
+   * hash 会变成 "#fn1"，parseHash 认不出 read/xxx → 直接渲染书库。
+   * 这就是"点脚注没跳注释、反而回到书库"的根因。
+   */
+  const handleContentClick = useCallback(
+    (e: React.MouseEvent<HTMLDivElement>) => {
+      const link = (e.target as HTMLElement | null)?.closest?.('a') as HTMLAnchorElement | null
+      if (!link) return
+      const href = link.getAttribute('href') ?? ''
+
+      // 外链：新标签页打开，绝不让它改当前页 hash
+      if (/^(?:https?:|mailto:|tel:)/i.test(href)) {
+        e.preventDefault()
+        window.open(href, '_blank', 'noopener,noreferrer')
+        return
+      }
+
+      // 其余（含空 href / "#" / "javascript:"）一律拦住默认跳转
+      e.preventDefault()
+
+      const article = link.closest('article[data-chapter-index]') as HTMLElement | null
+      const rawIndex = article?.getAttribute('data-chapter-index')
+      const fromIndex = rawIndex != null ? Number(rawIndex) : Number.NaN
+      const target = bookRef.current?.resolveHrefToChapter(
+        href,
+        Number.isFinite(fromIndex) ? fromIndex : undefined,
+      )
+      if (target) void jumpTo(target.chapterIndex, target.selector)
+    },
+    [jumpTo],
+  )
+
   /** 当前视口顶压着的块。和滚动记进度用同一套定位，保证书签落在读者看到的位置 */
   const getCurrentAnchor = useCallback((): { chapterIndex: number; blockIndex: number } => {
     const container = containerRef.current
@@ -626,6 +663,7 @@ export function Reader({ bookId, onExit }: Props) {
           className="reader-scroll"
           ref={containerRef}
           onScroll={handleScroll}
+          onClick={handleContentClick}
           style={{
             '--reader-font-size': `${settings.fontSize}px`,
             '--reader-line-height': `${settings.lineHeight}`,

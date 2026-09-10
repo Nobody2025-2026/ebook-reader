@@ -40,6 +40,17 @@ export interface OpenedBook {
   toc: TocEntry[]
   loadChapter(id: string): Promise<ChapterContent>
   resolveHref(href: string): { id: string; selector: string } | undefined
+  /**
+   * 把正文里的书内链接（脚注 / 目录锚点）解析成「章序号 + 章内锚点选择器」。
+   * fromChapterIndex = 链接所在的那一章，用来解析相对路径——
+   * 正文里的 href 是相对**当前章文件**的（如 part0003.xhtml 里的
+   * `href="part0004.xhtml#a005"`），不是相对 OPF 的。
+   * 解析不出来返回 undefined；调用方仍须阻止默认跳转，否则 hash 被改会踢回书库。
+   */
+  resolveHrefToChapter(
+    href: string,
+    fromChapterIndex?: number,
+  ): { chapterIndex: number; selector?: string } | undefined
   destroy(): void
 }
 
@@ -263,6 +274,49 @@ async function imageFromChapter(
   return matchChapterImage(html)
 }
 
+// ============================ 书内链接解析 ============================
+//
+// 正文里的脚注 / 目录锚点链接是"相对当前章文件"的路径：
+//   part0003.xhtml 里的 <a href="part0004.xhtml#a005">
+// 而 spine 记的是"相对 OPF"的路径（Text/part0004.xhtml）。
+// 解析库的 resolveHref 对正文里的这类 href 一律返回 undefined（2026-09-10 实测，
+// 连它自己文档里的 `epub:` 前缀写法也不认），所以这里自己归一化匹配。
+//
+// 这直接决定"点脚注能不能跳到注释"：解析不出目标就跳不了；而点击又必须
+// 拦掉浏览器默认行为，否则 hash 被改成 "#a005" 后 HashRouter 会把读者踢回书库。
+
+/** 归一化 zip 内路径：统一分隔符、解析 . 与 ..、去掉首尾斜杠 */
+function normalizePath(path: string): string {
+  const out: string[] = []
+  for (const seg of path.replace(/\\/g, '/').split('/')) {
+    if (!seg || seg === '.') continue
+    if (seg === '..') out.pop()
+    else out.push(seg)
+  }
+  return out.join('/')
+}
+
+/** 取路径的目录部分 */
+function dirOf(path: string): string {
+  const i = path.lastIndexOf('/')
+  return i >= 0 ? path.slice(0, i) : ''
+}
+
+/** 章内锚点选择器：id 与 name 两种写法都试（老书常用 <a name="…"> 做跳转目标） */
+function anchorSelector(frag: string): string {
+  const esc = frag.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+  return `[id="${esc}"], [name="${esc}"]`
+}
+
+/** 解码 URI 片段；脏百分号转义（如孤立的 %）会抛错，退回原串 */
+function safeDecode(value: string): string {
+  try {
+    return decodeURIComponent(value)
+  } catch {
+    return value
+  }
+}
+
 /**
  * 标题清洗：z-library 之类来源常把文件名当标题塞进 metadata，
  * 例如 "140857_人生财富靠康波_周金涛"。
@@ -384,6 +438,23 @@ export async function openEpub(
   const idToIndex = new Map(spine.map((item, index) => [item.id, index]))
   const hrefById = new Map(spine.map((item) => [item.id, String(item.href ?? '')]))
 
+  // 书内链接解析表：归一化 href → 章序号。
+  // 除完整路径外，还收 basename（脏书里 href 的目录前缀常和 spine 对不上）
+  // 与全小写两种兜底键（大小写不一致很常见）。先到先得，冲突取第一张。
+  const spineHrefs = spine.map((item) => String(item.href ?? ''))
+  const hrefLookup = new Map<string, number>()
+  const putLookup = (key: string, index: number) => {
+    if (key && !hrefLookup.has(key)) hrefLookup.set(key, index)
+  }
+  spineHrefs.forEach((href, index) => {
+    const norm = normalizePath(href.split(/[?#]/)[0])
+    putLookup(norm, index)
+    putLookup(norm.toLowerCase(), index)
+    const base = norm.slice(norm.lastIndexOf('/') + 1)
+    putLookup(base, index)
+    putLookup(base.toLowerCase(), index)
+  })
+
   // 字数权重：只解 zip 里的 xhtml 数字，不碰图片，比逐章 loadChapter 便宜得多
   const chapterWeights = computeChapterTextLengths(
     bytes,
@@ -416,6 +487,34 @@ export async function openEpub(
       return { html, css: css ?? [] }
     },
     resolveHref: (href: string) => epub.resolveHref(href),
+    resolveHrefToChapter(href: string, fromChapterIndex?: number) {
+      const raw = (href ?? '').trim()
+      if (!raw) return undefined
+      const hashAt = raw.indexOf('#')
+      const pathPart = hashAt >= 0 ? raw.slice(0, hashAt) : raw
+      const fragPart = hashAt >= 0 ? raw.slice(hashAt + 1) : ''
+      const selector = fragPart ? anchorSelector(safeDecode(fragPart)) : undefined
+
+      // 纯章内锚点（href="#fn1"）：留在当前章
+      if (!pathPart) {
+        return fromChapterIndex === undefined
+          ? undefined
+          : { chapterIndex: fromChapterIndex, selector }
+      }
+
+      const decoded = safeDecode(pathPart).split('?')[0]
+      const base = fromChapterIndex === undefined ? '' : dirOf(spineHrefs[fromChapterIndex] ?? '')
+      const candidates = [
+        normalizePath(base ? `${base}/${decoded}` : decoded),
+        normalizePath(decoded),
+        decoded.slice(decoded.lastIndexOf('/') + 1),
+      ]
+      for (const candidate of candidates) {
+        const hit = hrefLookup.get(candidate) ?? hrefLookup.get(candidate.toLowerCase())
+        if (hit !== undefined) return { chapterIndex: hit, selector }
+      }
+      return undefined
+    },
     destroy() {
       epub.destroy()
       resources.revoke()
