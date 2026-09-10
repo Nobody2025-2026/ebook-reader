@@ -2,7 +2,12 @@
 // 纯函数测试：不碰 DOM，跑得最快，优先把可测的逻辑都放这儿
 import { describe, expect, it } from 'vitest'
 import { lazyLoadImages, prepareChapterHtml, sanitizeChapterHtml } from '../src/lib/sanitize'
-import { computePercent, computeWeightedPercent, findAnchorBlock } from '../src/lib/progress'
+import {
+  computePercent,
+  computeWeightedPercent,
+  detectContentRange,
+  findAnchorBlock,
+} from '../src/lib/progress'
 import { parseHash } from '../src/lib/router'
 import { isValidCoverDataUrl } from '../src/lib/cover'
 
@@ -160,13 +165,72 @@ describe('computeWeightedPercent', () => {
 
   it('空权重与越界序号安全处理', () => {
     expect(computeWeightedPercent(0, 0.5, [])).toBe(0)
-    expect(computeWeightedPercent(999, 0, strategyBook)).toBeCloseTo(95.5, 0)
+    // 序号越过末章 = 读到全书末尾，给 100%（边界语义见 computeWeightedPercent 注释）
+    expect(computeWeightedPercent(999, 0, strategyBook)).toBe(100)
     expect(computeWeightedPercent(-1, 0, strategyBook)).toBe(0)
   })
 
   it('章内比例被夹到 0~1，结果夹在 0~100', () => {
     expect(computeWeightedPercent(3, 2, strategyBook)).toBe(100)
     expect(computeWeightedPercent(0, -1, strategyBook)).toBe(0)
+  })
+})
+
+describe('detectContentRange', () => {
+  // 两本真书报过 Bug（2026-09-10）的实际权重分布：
+  // 《The Art of Focus》：封面 5 字 / 正文 328893 字 / nav.xhtml（目录）1043 字
+  const artOfFocus = [5, 328893, 1043]
+  // 《策略思维》：封面 0 字 / 目录 Contents 1361 字 / 正文 250637 字 / 附录 13113 字
+  const strategyBook = [0, 1361, 250637, 13113]
+
+  it('去掉首尾的封面 / 目录 / nav 轻量章', () => {
+    // 《The Art of Focus》末尾的 nav.xhtml 是"目录"，必须排除，
+    // 否则滚到它进度被顶到 100%、恢复位置停在目录页翻不动
+    expect(detectContentRange(artOfFocus)).toEqual({ first: 1, last: 1 })
+    // 《策略思维》开头的封面 + 目录页都要排除，正文是第 2~3 项
+    expect(detectContentRange(strategyBook)).toEqual({ first: 2, last: 3 })
+  })
+
+  it('正常书（各章体量相当）不裁剪', () => {
+    expect(detectContentRange([12000, 15000, 11000, 13000])).toEqual({ first: 0, last: 3 })
+  })
+
+  it('各章都很碎（都低于平均）时不整本裁掉', () => {
+    // 阈值是"平均值的 5%"，均匀的小章节都过线，不该被误裁
+    expect(detectContentRange([10, 12, 9, 11])).toEqual({ first: 0, last: 3 })
+  })
+
+  it('空权重 / 全 0 权重安全返回', () => {
+    expect(detectContentRange([])).toEqual({ first: 0, last: -1 })
+    expect(detectContentRange([0, 0, 0])).toEqual({ first: 0, last: 2 })
+  })
+})
+
+describe('computeWeightedPercent（带正文区间）', () => {
+  const artOfFocus = [5, 328893, 1043]
+  const strategyBook = [0, 1361, 250637, 13113]
+  const artRange = detectContentRange(artOfFocus) // { first: 1, last: 1 }
+  const strRange = detectContentRange(strategyBook) // { first: 2, last: 3 }
+
+  it('区间之前（封面/目录）算 0%', () => {
+    expect(computeWeightedPercent(0, 0, artOfFocus, artRange)).toBe(0)
+    // 站在《策略思维》的目录页上 → 0%，不再是 0.5%
+    expect(computeWeightedPercent(1, 1, strategyBook, strRange)).toBe(0)
+  })
+
+  it('区间之后（nav/尾页）算 100%', () => {
+    expect(computeWeightedPercent(2, 0, artOfFocus, artRange)).toBe(100)
+  })
+
+  it('区间内按"正文总字数"折算，封面/目录不再稀释分母', () => {
+    // 《策略思维》正文区间 {2,3}，区间总字数 = 250637 + 13113 = 263750
+    expect(computeWeightedPercent(2, 0, strategyBook, strRange)).toBe(0)
+    expect(computeWeightedPercent(2, 0.5, strategyBook, strRange)).toBeCloseTo(
+      (250637 * 0.5 * 100) / 263750,
+      1,
+    )
+    // 读完最后一章 = 100%
+    expect(computeWeightedPercent(3, 1, strategyBook, strRange)).toBe(100)
   })
 })
 

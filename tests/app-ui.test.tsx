@@ -21,7 +21,7 @@ import {
   type BookMeta,
 } from '../src/lib/storage'
 
-const { openEpubMock, mockBook } = vi.hoisted(() => {
+const { openEpubMock, mockBook, furnitureBook } = vi.hoisted(() => {
   const openEpubMock = vi.fn()
   const mockBook = {
     meta: { title: '测试书', author: '主上大人', language: 'zh', cover: undefined },
@@ -42,7 +42,23 @@ const { openEpubMock, mockBook } = vi.hoisted(() => {
     resolveHref: () => undefined,
     destroy: vi.fn(),
   }
-  return { openEpubMock, mockBook }
+  // 脏书样本：正文只在中间一项，末尾挂一个轻量 nav.xhtml（目录页）。
+  // 复现 2026-09-10 报的 Bug：进度被存到 nav 上 → 下次打开"只有目录页、翻不动"。
+  const furnitureBook = {
+    meta: { title: '脏书', author: 'x', language: 'zh', cover: undefined },
+    chapters: [
+      { id: 'cover', label: '封面' },
+      { id: 'body', label: '正文' },
+      { id: 'nav', label: '目录' },
+    ],
+    // nav 只有 1000 字，远低于平均 → detectContentRange 判为正文区间之外
+    chapterWeights: [5, 300000, 1000],
+    toc: [],
+    loadChapter: async (id: string) => ({ html: `<p>${id} 的正文</p>`, css: [] }),
+    resolveHref: () => undefined,
+    destroy: vi.fn(),
+  }
+  return { openEpubMock, mockBook, furnitureBook }
 })
 
 vi.mock('../src/lib/epub', () => ({ openEpub: openEpubMock }))
@@ -165,6 +181,30 @@ describe('阅读器', () => {
 
     render(<Reader bookId="b1" onExit={vi.fn()} />)
     await waitFor(() => expect(screen.getByText('c3 的正文')).toBeInTheDocument())
+  })
+
+  // ↓↓ 回归用例：2026-09-10 报的"进度存到末尾目录页 → 打开只有目录、翻不动"
+  it('恢复进度落在末尾 nav（目录页）时，夹回正文而不是停在目录', async () => {
+    await saveBook(meta, new File(['a'], 'book.epub'))
+    // 模拟 Bug 现场：脏书把进度存到了 nav（spine 最后一项，轻量目录页）
+    await saveProgress('b1', { chapterIndex: 2, blockIndex: 0, percent: 100, updatedAt: Date.now() })
+    openEpubMock.mockResolvedValue(furnitureBook)
+
+    render(<Reader bookId="b1" onExit={vi.fn()} />)
+    // 打开的是正文那章（index 1），不是 nav（index 2）
+    await waitFor(() => expect(screen.getByText('body 的正文')).toBeInTheDocument())
+    expect(screen.queryByText('nav 的正文')).not.toBeInTheDocument()
+  })
+
+  it('正文区间之后的 nav 页不会被当正文自动加载', async () => {
+    await saveBook(meta, new File(['a'], 'book.epub'))
+    openEpubMock.mockResolvedValue(furnitureBook)
+
+    render(<Reader bookId="b1" onExit={vi.fn()} />)
+    // 首屏从封面开始，pump 补加载到正文；nav 在正文区间之外，不该被拉进来
+    await waitFor(() => expect(screen.getByText('body 的正文')).toBeInTheDocument())
+    expect(screen.getByText('cover 的正文')).toBeInTheDocument()
+    expect(screen.queryByText('nav 的正文')).not.toBeInTheDocument()
   })
 
   it('滚动后把进度写进存储', async () => {

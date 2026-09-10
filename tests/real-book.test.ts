@@ -9,6 +9,7 @@ import { join, resolve } from 'node:path'
 import { unzipSync } from 'fflate'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { normalizeTitle, openEpub, type OpenedBook } from '../src/lib/epub'
+import { computeWeightedPercent, detectContentRange } from '../src/lib/progress'
 import { prepareChapterHtml } from '../src/lib/sanitize'
 import { findOpfPath, resolveZipPath } from '../src/lib/weights'
 
@@ -162,5 +163,71 @@ describe.skipIf(!hasMetaCoverBook)('真实样本《博弈与社会》（封面�
   it('标题是正常书名，不是文件名', () => {
     expect(book.meta.title).toBeTruthy()
     expect(book.meta.title).not.toMatch(/\.epub$/i)
+  })
+})
+
+// 第三、四本真实样本：转换版 EPUB 的"轻量边缘章"陷阱（z-library 常见）。
+// 两本书都把**全书正文塞进单个 spine 项**，另外挂一个只有千把字的目录页。
+// 2026-09-10 的 Bug 就出在这里：进度被存到那个目录页上 → 下次打开
+// "只有目录页、翻不动"。修复靠 detectContentRange 把这页划出正文区间。
+const artOfFocus = resolve(process.cwd(), 'books/The Art of Focus.epub')
+const hasArtOfFocus = existsSync(artOfFocus)
+
+describe.skipIf(!hasArtOfFocus)('真实样本《The Art of Focus》（末尾挂 nav 目录页）', () => {
+  let book: OpenedBook
+  const saveDir = mkdtempSync(join(tmpdir(), 'reader-test-'))
+
+  beforeAll(async () => {
+    book = await openEpub(artOfFocus, { resourceSaveDir: saveDir })
+  }, 60_000)
+
+  afterAll(() => {
+    book?.destroy()
+    rmSync(saveDir, { recursive: true, force: true })
+  })
+
+  it('结构就是"封面 + 全书正文 + nav"，正文区间必须排除末尾 nav', () => {
+    // spine：[cover.xhtml, Section0001.xhtml(全书正文), nav.xhtml(目录)]
+    expect(book.chapters.length).toBe(3)
+    expect(book.chapterWeights[1]).toBeGreaterThan(100_000)
+    expect(book.chapterWeights[2]).toBeLessThan(5_000)
+    expect(detectContentRange(book.chapterWeights)).toEqual({ first: 1, last: 1 })
+  })
+
+  it('站在末尾 nav 上算 100%；恢复位置会被夹回正文章（1），不会停在 nav（2）', () => {
+    const range = detectContentRange(book.chapterWeights)
+    expect(computeWeightedPercent(2, 0, book.chapterWeights, range)).toBe(100)
+    expect(Math.min(Math.max(2, range.first), range.last)).toBe(1)
+  })
+})
+
+const strategyThinking = resolve(process.cwd(), 'books/策略思维.epub')
+const hasStrategyThinking = existsSync(strategyThinking)
+
+describe.skipIf(!hasStrategyThinking)('真实样本《策略思维》（开头挂轻量目录页）', () => {
+  let book: OpenedBook
+  const saveDir = mkdtempSync(join(tmpdir(), 'reader-test-'))
+
+  beforeAll(async () => {
+    book = await openEpub(strategyThinking, { resourceSaveDir: saveDir })
+  }, 60_000)
+
+  afterAll(() => {
+    book?.destroy()
+    rmSync(saveDir, { recursive: true, force: true })
+  })
+
+  it('正文区间跳过开头的封面与目录页（Contents），落在真正的正文上', () => {
+    // spine：[cover, Contents(目录), 全书正文, 部分页]；目录页只有 1300 字上下
+    expect(book.chapters.length).toBe(4)
+    expect(book.chapterWeights[1]).toBeLessThan(10_000)
+    expect(book.chapterWeights[2]).toBeGreaterThan(100_000)
+    expect(detectContentRange(book.chapterWeights)).toEqual({ first: 2, last: 3 })
+  })
+
+  it('目录页（index 1）算 0%，不再是"开篇就 0.5%"；正文开头为 0%', () => {
+    const range = detectContentRange(book.chapterWeights)
+    expect(computeWeightedPercent(1, 1, book.chapterWeights, range)).toBe(0)
+    expect(computeWeightedPercent(2, 0, book.chapterWeights, range)).toBe(0)
   })
 })
