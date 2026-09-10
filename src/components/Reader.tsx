@@ -85,19 +85,31 @@ export function Reader({ bookId, onExit }: Props) {
 
   // ---- 高亮与笔记（P1）----
   const [annotations, setAnnotations] = useState<Annotation[]>([])
-  // 笔记编辑浮层：框选生成时 mode='create'，点已有高亮时 mode='view'
+  //
+  // 浮层两种形态：
+  // - mode='create'：刚框选完、**还没入库**。必须点「加高亮」才真正创建，
+  //   点「取消」/浮层外/Esc 就放弃 —— 选错了不会留下垃圾高亮。
+  // - mode='view'：点已有高亮弹出的编辑框（保存 / 删除 / 关闭）。
   const [activeAnn, setActiveAnn] = useState<{
     id: string
     top: number
     left: number
     mode: 'create' | 'view'
+    excerpt: string
+    anchor?: {
+      chapterIndex: number
+      blockIndex: number
+      startOffset: number
+      endOffset: number
+      text: string
+    }
   } | null>(null)
   const [noteDraft, setNoteDraft] = useState('')
   // 导出面板：先选再导出，避免"点了就静默下个文件、不知道导了啥"
   const [exportOpen, setExportOpen] = useState(false)
   const [exportChecked, setExportChecked] = useState<Record<string, boolean>>({})
   // 导出结果提示（原来完全没有反馈，被当成"没生效"）
-  const [exportMsg, setExportMsg] = useState('')
+  const [toast, setToast] = useState('')
 
   // ---- 单书全文搜索（P1）----
   const [searchOpen, setSearchOpen] = useState(false)
@@ -508,7 +520,13 @@ export function Reader({ bookId, onExit }: Props) {
         const id = markEl.getAttribute('data-ann-id') ?? ''
         const rect = markEl.getBoundingClientRect()
         const ann = annotations.find((a) => a.id === id)
-        setActiveAnn({ id, top: rect.top + 8, left: rect.left, mode: 'view' })
+        setActiveAnn({
+          id,
+          top: rect.top + 8,
+          left: rect.left,
+          mode: 'view',
+          excerpt: ann?.text ?? markEl.textContent ?? '',
+        })
         setNoteDraft(ann?.note ?? '')
         return
       }
@@ -590,8 +608,12 @@ export function Reader({ bookId, onExit }: Props) {
   // 章节进 DOM 后由 applyHighlights 重绘 <mark>，任何重渲染都冲不掉（见 highlight.ts）。
   // 点已有高亮 → 浮层看/改/删笔记；框选 → 生成高亮并弹出笔记浮层。
 
-  /** 选区生成高亮：在 .reader-scroll 的 onMouseUp 里调用 */
-  const createHighlightFromSelection = useCallback(() => {
+  //
+  // 框选 → **只弹确认浮层，不落库**。
+  // 之前是"一选中就立刻写进 IndexedDB"，用户框错一段（或只是想选中复制）
+  // 也会留下一条高亮，只能事后去面板里删 —— 这是本轮最被吐槽的一点。
+  // 现在改成显式确认：点「加高亮」才入库，取消/点别处/Esc 一律放弃。
+  const openSelectionPopover = useCallback(() => {
     const sel = window.getSelection()
     if (!sel || sel.isCollapsed || sel.rangeCount === 0) return
     const range = sel.getRangeAt(0)
@@ -604,21 +626,14 @@ export function Reader({ bookId, onExit }: Props) {
     const anchor: BlockAnchor | null = selectionToAnchor(article, sel)
     if (!anchor) return
     const chapterIndex = Number(article.getAttribute('data-chapter-index'))
-    const id = newAnnotationId()
-    const ann: Annotation = {
-      id,
-      bookId,
-      chapterIndex,
-      blockIndex: anchor.blockIndex,
-      startOffset: anchor.startOffset,
-      endOffset: anchor.endOffset,
-      text: anchor.text,
-      color: 'rgba(255, 224, 102, 0.6)',
-      createdAt: Date.now(),
-    }
-    void addAnnotation(bookId, ann).then((ok) => {
-      if (ok) setAnnotations((prev) => [...prev, ann])
-    })
+    // 与已有高亮完全重叠 → 提示，不再弹框重复创建
+    const dup = annotations.find(
+      (a) =>
+        a.chapterIndex === chapterIndex &&
+        a.blockIndex === anchor.blockIndex &&
+        a.startOffset === anchor.startOffset &&
+        a.endOffset === anchor.endOffset,
+    )
     // jsdom 没实现 Range.getBoundingClientRect，浏览器里有；做存在性保护，
     // 浮层定位拿不到真实坐标时退化为 (0,0)，不影响高亮本身。
     let rectTop = 0
@@ -628,26 +643,88 @@ export function Reader({ bookId, onExit }: Props) {
       rectTop = r.top
       rectLeft = r.left
     }
-    setActiveAnn({ id, top: rectTop + 8, left: rectLeft, mode: 'create' })
-    setNoteDraft('')
     sel.removeAllRanges()
-  }, [bookId])
+    if (dup) {
+      setToast('这段已经高亮过了')
+      return
+    }
+    setActiveAnn({
+      id: '',
+      top: rectTop + 8,
+      left: rectLeft,
+      mode: 'create',
+      excerpt: anchor.text,
+      anchor: {
+        chapterIndex,
+        blockIndex: anchor.blockIndex,
+        startOffset: anchor.startOffset,
+        endOffset: anchor.endOffset,
+        text: anchor.text,
+      },
+    })
+    setNoteDraft('')
+  }, [annotations])
 
-  /** 保存当前浮层里正在编辑的笔记 */
+  /** 确认加高亮：只有点了「加高亮」才真正写库（可同时带上笔记） */
+  const confirmHighlight = useCallback(async () => {
+    if (!activeAnn || activeAnn.mode !== 'create' || !activeAnn.anchor) return
+    const a = activeAnn.anchor
+    const id = newAnnotationId()
+    const note = noteDraft.trim()
+    const ann: Annotation = {
+      id,
+      bookId,
+      chapterIndex: a.chapterIndex,
+      blockIndex: a.blockIndex,
+      startOffset: a.startOffset,
+      endOffset: a.endOffset,
+      text: a.text,
+      note: note || undefined,
+      color: 'rgba(255, 224, 102, 0.6)',
+      createdAt: Date.now(),
+    }
+    const ok = await addAnnotation(bookId, ann)
+    if (ok) setAnnotations((prev) => [...prev, ann])
+    setActiveAnn(null)
+    setToast(note ? '已添加高亮和笔记' : '已添加高亮')
+  }, [activeAnn, bookId, noteDraft])
+
+  /** 保存当前浮层里正在编辑的笔记（已有高亮的 view 模式） */
   const saveNote = useCallback(async () => {
-    if (!activeAnn) return
+    if (!activeAnn || activeAnn.mode !== 'view') return
     await updateAnnotationNote(bookId, activeAnn.id, noteDraft)
     setAnnotations((prev) => prev.map((a) => (a.id === activeAnn.id ? { ...a, note: noteDraft } : a)))
     setActiveAnn(null)
+    setToast(noteDraft.trim() ? '笔记已保存' : '笔记已清空')
   }, [activeAnn, bookId, noteDraft])
+
+  /**
+   * 删一条高亮。管理面板的逐条删除、批量删除、浮层里的删除都走这里，
+   * 保证「库里删干净 + 列表同步 + 勾选态同步 + 浮层关闭」四件事一起做，
+   * 不会出现"删了却还勾着/浮层还挂着"的残留。
+   */
+  const deleteAnnotations = useCallback(
+    async (ids: string[]) => {
+      if (ids.length === 0) return
+      const set = new Set(ids)
+      await Promise.all(ids.map((id) => removeAnnotation(bookId, id)))
+      setAnnotations((prev) => prev.filter((a) => !set.has(a.id)))
+      setExportChecked((prev) => {
+        const next: Record<string, boolean> = {}
+        for (const [k, v] of Object.entries(prev)) if (!set.has(k)) next[k] = v
+        return next
+      })
+      setActiveAnn((cur) => (cur && cur.id && set.has(cur.id) ? null : cur))
+      setToast(ids.length > 1 ? `已删除 ${ids.length} 条高亮` : '已删除 1 条高亮')
+    },
+    [bookId],
+  )
 
   /** 删除当前浮层对应的高亮 */
   const deleteActive = useCallback(async () => {
-    if (!activeAnn) return
-    await removeAnnotation(bookId, activeAnn.id)
-    setAnnotations((prev) => prev.filter((a) => a.id !== activeAnn.id))
-    setActiveAnn(null)
-  }, [activeAnn, bookId])
+    if (!activeAnn || !activeAnn.id) return
+    await deleteAnnotations([activeAnn.id])
+  }, [activeAnn, deleteAnnotations])
 
   /** 跳转搜索结果：先确保章节已加载，再定位到含关键词的块 */
   const jumpToHit = useCallback(
@@ -692,7 +769,7 @@ export function Reader({ bookId, onExit }: Props) {
     for (const a of annotations) all[a.id] = true
     setExportChecked(all)
     setExportOpen(true)
-    setExportMsg('')
+    setToast('')
   }, [annotations])
 
   /** 导出勾选的高亮笔记为 Markdown（纯本地下载，不联网） */
@@ -700,7 +777,7 @@ export function Reader({ bookId, onExit }: Props) {
     async (ids: string[]) => {
       const chosen = annotations.filter((a) => ids.includes(a.id))
       if (chosen.length === 0) {
-        setExportMsg('还没勾选任何高亮')
+        setToast('还没勾选任何高亮')
         return
       }
       const md = buildAnnotationMarkdown(chosen, title)
@@ -715,7 +792,7 @@ export function Reader({ bookId, onExit }: Props) {
       URL.revokeObjectURL(url)
       // 明确的成功反馈 + 数量，替代原来的静默下载
       const withNote = chosen.filter((x) => x.note?.trim()).length
-      setExportMsg(
+      setToast(
         `已导出 ${chosen.length} 条高亮${withNote ? `（含 ${withNote} 条笔记）` : ''}`,
       )
     },
@@ -724,10 +801,10 @@ export function Reader({ bookId, onExit }: Props) {
 
   // 导出提示 2.5 秒后自动消失
   useEffect(() => {
-    if (!exportMsg) return
-    const t = setTimeout(() => setExportMsg(''), 2500)
+    if (!toast) return
+    const t = setTimeout(() => setToast(''), 2500)
     return () => clearTimeout(t)
-  }, [exportMsg])
+  }, [toast])
 
   /** 跳到书签位置：先确保章节已加载，再滚到那一块 */
   const goToBookmark = useCallback(
@@ -831,6 +908,20 @@ export function Reader({ bookId, onExit }: Props) {
       const page = Math.max(container.clientHeight - 48, 200) // 一屏高度，留 48px 视觉衔接
 
       if (e.key === 'Escape') {
+        // 有浮层/面板开着时，Esc 先关它们，不要一按就把整本书关掉。
+        // 尤其是刚框选完的确认浮层：Esc = "我选错了，取消"，最符合直觉。
+        if (activeAnn) {
+          setActiveAnn(null)
+          return
+        }
+        if (exportOpen || searchOpen || bookmarksOpen || settingsOpen || tocOpen) {
+          setExportOpen(false)
+          setSearchOpen(false)
+          setBookmarksOpen(false)
+          setSettingsOpen(false)
+          setTocOpen(false)
+          return
+        }
         onExit()
         return
       }
@@ -931,10 +1022,10 @@ export function Reader({ bookId, onExit }: Props) {
         <button
           className="btn btn-ghost"
           onClick={openExportPanel}
-          title="选择并导出高亮与笔记（Markdown）"
+          title="管理高亮与笔记：勾选后可导出或删除"
           disabled={annotations.length === 0}
         >
-          导出{annotations.length > 0 ? ` ${annotations.length}` : ''}
+          笔记{annotations.length > 0 ? ` ${annotations.length}` : ''}
         </button>
         <span className="reader-percent">{percent.toFixed(1)}%</span>
       </header>
@@ -945,7 +1036,7 @@ export function Reader({ bookId, onExit }: Props) {
           ref={containerRef}
           onScroll={handleScroll}
           onClick={handleContentClick}
-          onMouseUp={() => createHighlightFromSelection()}
+          onMouseUp={() => openSelectionPopover()}
           style={{
             '--reader-font-size': `${settings.fontSize}px`,
             '--reader-line-height': `${settings.lineHeight}`,
@@ -1246,7 +1337,7 @@ export function Reader({ bookId, onExit }: Props) {
         {exportOpen && (
           <aside className="search-panel export-panel">
             <div className="search-header">
-              <span>导出高亮与笔记</span>
+              <span>高亮与笔记管理</span>
               <button
                 className="btn btn-ghost"
                 onClick={() => setExportOpen(false)}
@@ -1277,13 +1368,14 @@ export function Reader({ bookId, onExit }: Props) {
                 <p className="search-empty">还没有高亮。</p>
               ) : (
                 annotations.map((a) => (
-                  <label key={a.id} className="export-item">
+                  <div key={a.id} className="export-item">
                     <input
                       type="checkbox"
                       checked={!!exportChecked[a.id]}
                       onChange={(e) =>
                         setExportChecked((prev) => ({ ...prev, [a.id]: e.target.checked }))
                       }
+                      aria-label="选择这条高亮"
                     />
                     <span className="export-item__body">
                       <span className="search-item__chapter">第 {a.chapterIndex + 1} 章</span>
@@ -1294,7 +1386,15 @@ export function Reader({ bookId, onExit }: Props) {
                         <span className="export-item__note">📝 {a.note}</span>
                       ) : null}
                     </span>
-                  </label>
+                    {/* 管理面板直接删：以前只能导出，想删得回正文里点高亮再删 */}
+                    <button
+                      className="export-del"
+                      title="删除这条高亮"
+                      onClick={() => void deleteAnnotations([a.id])}
+                    >
+                      删除
+                    </button>
+                  </div>
                 ))
               )}
             </div>
@@ -1302,46 +1402,70 @@ export function Reader({ bookId, onExit }: Props) {
               <span className="export-count">
                 已选 {annotations.filter((a) => exportChecked[a.id]).length} 条
               </span>
-              <button
-                className="btn"
-                onClick={() =>
-                  void exportNotes(annotations.filter((a) => exportChecked[a.id]).map((a) => a.id))
-                }
-                disabled={annotations.filter((a) => exportChecked[a.id]).length === 0}
-              >
-                导出选中
-              </button>
+              <div className="export-footer__actions">
+                <button
+                  className="btn btn-ghost"
+                  onClick={() =>
+                    void deleteAnnotations(
+                      annotations.filter((a) => exportChecked[a.id]).map((a) => a.id),
+                    )
+                  }
+                  disabled={annotations.filter((a) => exportChecked[a.id]).length === 0}
+                >
+                  删除选中
+                </button>
+                <button
+                  className="btn"
+                  onClick={() =>
+                    void exportNotes(annotations.filter((a) => exportChecked[a.id]).map((a) => a.id))
+                  }
+                  disabled={annotations.filter((a) => exportChecked[a.id]).length === 0}
+                >
+                  导出选中
+                </button>
+              </div>
             </div>
           </aside>
         )}
 
-        {exportMsg && <div className="export-toast">{exportMsg}</div>}
+        {toast && <div className="export-toast">{toast}</div>}
 
         {activeAnn && (
           <div
             className="ann-popover"
             style={{ position: 'fixed', top: activeAnn.top, left: Math.min(activeAnn.left, window.innerWidth - 320) }}
           >
-            <div className="ann-popover__excerpt">
-              {annotations.find((a) => a.id === activeAnn.id)?.text}
-            </div>
+            <div className="ann-popover__excerpt">{activeAnn.excerpt}</div>
             <textarea
               className="ann-popover__note"
               value={noteDraft}
               onChange={(e) => setNoteDraft(e.target.value)}
-              placeholder="写点笔记…"
+              placeholder={activeAnn.mode === 'create' ? '写点笔记（可留空）…' : '写点笔记…'}
               autoFocus={activeAnn.mode === 'create'}
             />
             <div className="ann-popover__actions">
-              <button className="btn" onClick={() => void saveNote()}>
-                保存
-              </button>
-              <button className="btn btn-ghost" onClick={() => void deleteActive()}>
-                删除
-              </button>
-              <button className="btn btn-ghost" onClick={() => setActiveAnn(null)}>
-                关闭
-              </button>
+              {activeAnn.mode === 'create' ? (
+                <>
+                  <button className="btn" onClick={() => void confirmHighlight()}>
+                    加高亮
+                  </button>
+                  <button className="btn btn-ghost" onClick={() => setActiveAnn(null)}>
+                    取消
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button className="btn" onClick={() => void saveNote()}>
+                    保存
+                  </button>
+                  <button className="btn btn-ghost" onClick={() => void deleteActive()}>
+                    删除
+                  </button>
+                  <button className="btn btn-ghost" onClick={() => setActiveAnn(null)}>
+                    关闭
+                  </button>
+                </>
+              )}
             </div>
           </div>
         )}

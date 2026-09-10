@@ -112,6 +112,45 @@ describe('highlight DOM', () => {
     }
   })
 
+  it('重叠区间合并显示：后选的大区间不会让先选的小高亮消失（Bug #2 回归）', () => {
+    const art = mountArticle('<p>abcdefghij</p>')
+    document.body.appendChild(art)
+    try {
+      // 先划了 cde，后来又划了整段 abcdefghij。
+      // 早期实现会让大区间先画、小区间因"已被覆盖"被丢弃，
+      // 用户看到的是"之前那条高亮不见了"；现在合并成一段连续高亮。
+      applyHighlights(art, [
+        { id: 'small', blockIndex: 0, startOffset: 2, endOffset: 5 },
+        { id: 'big', blockIndex: 0, startOffset: 0, endOffset: 10 },
+      ])
+      const marks = art.querySelectorAll('mark.hl')
+      expect(marks.length).toBe(1)
+      expect(marks[0].textContent).toBe('abcdefghij')
+      // 被合并的 id 都记在 data-ann-ids 上，数据一条不少
+      expect(marks[0].getAttribute('data-ann-ids')?.split(',').sort()).toEqual(['big', 'small'])
+      expect(art.textContent).toBe('abcdefghij')
+    } finally {
+      document.body.removeChild(art)
+    }
+  })
+
+  it('多块 + 多段：所有高亮都画上，且总条数不丢', () => {
+    const art = mountArticle('<p>abcdefghij</p><p>klmnopqrst</p>')
+    document.body.appendChild(art)
+    try {
+      applyHighlights(art, [
+        { id: '1', blockIndex: 0, startOffset: 0, endOffset: 3 },
+        { id: '2', blockIndex: 0, startOffset: 5, endOffset: 7 },
+        { id: '3', blockIndex: 1, startOffset: 2, endOffset: 6 },
+      ])
+      const marks = art.querySelectorAll('mark.hl')
+      expect(marks.length).toBe(3)
+      expect(art.textContent).toBe('abcdefghijklmnopqrst')
+    } finally {
+      document.body.removeChild(art)
+    }
+  })
+
   it('offset 越界时 clamp，不跨块、不抛错', () => {
     const art = mountArticle('<p>abcdef</p><p>ghijkl</p>')
     document.body.appendChild(art)

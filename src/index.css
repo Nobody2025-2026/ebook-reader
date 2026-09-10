@@ -829,6 +829,34 @@ body {
   word-break: break-word;
 }
 
+/* 管理面板里逐条删除的按钮 */
+.export-del {
+  flex-shrink: 0;
+  align-self: flex-start;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+
+.export-del:hover {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+.export-footer__actions {
+  display: flex;
+  gap: 8px;
+}
+
+.export-footer__actions .btn {
+  padding: 6px 12px;
+  font-size: 13px;
+}
+
 .export-item__note {
   color: var(--muted);
   font-size: 13px;

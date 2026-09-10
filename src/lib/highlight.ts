@@ -120,6 +120,7 @@ function wrapRange(
   end: number,
   annId: string,
   color?: string,
+  allIds?: string[],
 ): void {
   const a = locateInBlock(block, start)
   const b = locateInBlock(block, end)
@@ -136,13 +137,21 @@ function wrapRange(
     return
   }
   if (range.collapsed) return
-  const frag = range.extractContents()
-  const mark = document.createElement('mark')
-  mark.className = 'hl'
-  mark.dataset.annId = annId
-  if (color) mark.style.backgroundColor = color
-  mark.appendChild(frag)
-  range.insertNode(mark)
+  // extractContents / insertNode 在个别脏 HTML 结构下会抛（半截标签、异常嵌套）。
+  // 这里必须吞掉：否则异常会顺着 applyHighlights 往上冒，
+  // 而 unwrapAll 已经执行过了 → 整章高亮全被清空且再也画不回来。
+  try {
+    const frag = range.extractContents()
+    const mark = document.createElement('mark')
+    mark.className = 'hl'
+    mark.dataset.annId = annId
+    if (allIds && allIds.length) mark.dataset.annIds = allIds.join(',')
+    if (color) mark.style.backgroundColor = color
+    mark.appendChild(frag)
+    range.insertNode(mark)
+  } catch {
+    /* 单段包裹失败：跳过这一段，其余高亮照常绘制 */
+  }
 }
 
 /** 清除一个 article 内所有我们加的 <mark.hl>（保留文本），并合并文本节点 */
@@ -176,16 +185,39 @@ export function applyHighlights(
   for (const [blockIndex, list] of byBlock) {
     const block = blocks[blockIndex]
     if (!block) continue
-    const total = blockTextLength(block)
-    const sorted = [...list].sort((x, y) => x.startOffset - y.startOffset)
-    // 简单重叠保护：跳过与已包裹区间重叠的高亮，避免嵌套 <mark>
-    let coveredEnd = -1
-    for (const ann of sorted) {
-      const s = Math.max(0, Math.min(ann.startOffset, total))
-      const e = Math.max(0, Math.min(ann.endOffset, total))
-      if (e <= s || s < coveredEnd) continue // 越界或重叠跳过
-      wrapRange(block, s, e, ann.id, ann.color)
-      coveredEnd = e
+    try {
+      const total = blockTextLength(block)
+      const sorted = [...list].sort((x, y) => x.startOffset - y.startOffset)
+      //
+      // 重叠区间**合并**而不是丢弃。
+      // 早期版本用「跳过与前面重叠的」保护嵌套，结果是：先选一小段、再选一大段把它包住时，
+      // 大段先画、小段因起点落在已覆盖区内被丢弃 → 用户看到"之前的高亮消失了"。
+      // 合并成一段连续 <mark> 后，视觉上稳定，被合并的 id 记在 data-ann-ids 上，
+      // 导出/删除仍按原始多条处理（数据一条不少）。
+      const merged: { start: number; end: number; ids: string[]; color?: string }[] = []
+      for (const ann of sorted) {
+        const s = Math.max(0, Math.min(ann.startOffset, total))
+        const e = Math.max(0, Math.min(ann.endOffset, total))
+        if (e <= s) continue
+        const last = merged[merged.length - 1]
+        if (last && s <= last.end) {
+          last.end = Math.max(last.end, e)
+          last.ids.push(ann.id)
+        } else {
+          merged.push({ start: s, end: e, ids: [ann.id], color: ann.color })
+        }
+      }
+      for (const seg of merged) {
+        // 单段失败不能影响其他段（见 wrapRange 里的说明）
+        try {
+          wrapRange(block, seg.start, seg.end, seg.ids[0], seg.color, seg.ids)
+        } catch {
+          /* 继续画下一段 */
+        }
+      }
+    } catch {
+      // 整个块出问题也只丢这一块，不中断其他块的重绘
+      continue
     }
   }
 }

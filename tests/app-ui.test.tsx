@@ -377,7 +377,8 @@ describe('阅读器', () => {
   })
 
   // ↓↓ P1：字符级高亮 —— 框选正文生成高亮并持久化（回归点：dangerouslySetInnerHTML 重渲染不能冲掉高亮）
-  it('框选正文生成高亮、存进 IndexedDB，且重渲染后仍在', async () => {
+  // 框选后**不**立即入库：先弹确认浮层，点「加高亮」才写库（用户选错可直接取消）
+  it('框选正文后需点「加高亮」才写入 IndexedDB', async () => {
     await saveBook(meta, new File(['a'], 'book.epub'))
     const { container } = render(<Reader bookId="b1" onExit={vi.fn()} />)
     await waitFor(() => expect(screen.getByText('c1 的正文')).toBeInTheDocument())
@@ -394,21 +395,74 @@ describe('阅读器', () => {
     const scroller = container.querySelector('.reader-scroll') as HTMLElement
     fireEvent.mouseUp(scroller)
 
-    // 高亮立刻画成 <mark.hl>
+    // 只弹确认浮层：此时还没有入库、正文也没被染黄
+    await waitFor(() => expect(screen.getByText('加高亮')).toBeInTheDocument())
+    expect(await listAnnotations('b1')).toHaveLength(0)
+    expect(container.querySelector('mark.hl')).toBeNull()
+
+    // 点「加高亮」→ 才真正写入并画出高亮
+    fireEvent.click(screen.getByText('加高亮'))
     await waitFor(() =>
       expect(container.querySelector('article[data-chapter-index="0"] mark.hl')).toBeTruthy(),
     )
-    // 持久化到存储
     await waitFor(async () => {
       const list = await listAnnotations('b1')
       expect(list.length).toBe(1)
       expect(list[0].text).toBe('c1')
     })
+  })
 
-    // 触发一次重渲染（切章再回来 / 重新打开面板都行）：这里直接重渲染滚动容器内容，
-    // 验证 applyHighlights 的幂等重绘不会被冲掉
-    const markBefore = container.querySelector('article[data-chapter-index="0"] mark.hl') as HTMLElement
-    expect(markBefore.textContent).toBe('c1')
+  it('框选后点取消：不留下任何高亮', async () => {
+    await saveBook(meta, new File(['a'], 'book.epub'))
+    const { container } = render(<Reader bookId="b1" onExit={vi.fn()} />)
+    await waitFor(() => expect(screen.getByText('c1 的正文')).toBeInTheDocument())
+
+    const p = container.querySelector('article[data-chapter-index="0"] p') as HTMLElement
+    const textNode = p.firstChild as Text
+    const range = document.createRange()
+    range.setStart(textNode, 0)
+    range.setEnd(textNode, 2)
+    const sel = window.getSelection()!
+    sel.removeAllRanges()
+    sel.addRange(range)
+
+    const scroller = container.querySelector('.reader-scroll') as HTMLElement
+    fireEvent.mouseUp(scroller)
+    await waitFor(() => expect(screen.getByText('取消')).toBeInTheDocument())
+
+    fireEvent.click(screen.getByText('取消'))
+    await waitFor(() => expect(screen.queryByText('取消')).toBeNull())
+    expect(await listAnnotations('b1')).toHaveLength(0)
+    expect(container.querySelector('mark.hl')).toBeNull()
+  })
+
+  it('笔记管理面板可以逐条删除高亮', async () => {
+    await saveBook(meta, new File(['a'], 'book.epub'))
+    const { container } = render(<Reader bookId="b1" onExit={vi.fn()} />)
+    await waitFor(() => expect(screen.getByText('c1 的正文')).toBeInTheDocument())
+
+    // 先建一条高亮
+    const p = container.querySelector('article[data-chapter-index="0"] p') as HTMLElement
+    const textNode = p.firstChild as Text
+    const range = document.createRange()
+    range.setStart(textNode, 0)
+    range.setEnd(textNode, 2)
+    const sel = window.getSelection()!
+    sel.removeAllRanges()
+    sel.addRange(range)
+    fireEvent.mouseUp(container.querySelector('.reader-scroll') as HTMLElement)
+    await waitFor(() => expect(screen.getByText('加高亮')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('加高亮'))
+    await waitFor(async () => expect(await listAnnotations('b1')).toHaveLength(1))
+
+    // 打开管理面板删掉它
+    fireEvent.click(screen.getByRole('button', { name: /^笔记/ }))
+    await waitFor(() => expect(screen.getByText('高亮与笔记管理')).toBeInTheDocument())
+    fireEvent.click(screen.getByTitle('删除这条高亮'))
+
+    await waitFor(async () => expect(await listAnnotations('b1')).toHaveLength(0))
+    // 正文里的 <mark> 也应随之消失
+    await waitFor(() => expect(container.querySelector('mark.hl')).toBeNull())
   })
 
   // ↓↓ P1：单书全文搜索 —— 打开搜索面板、输入关键词返回命中并可跳转
