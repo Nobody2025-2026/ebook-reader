@@ -58,6 +58,18 @@
 
   真浏览器（Playwright）实测修复前后：《策略思维》修复前滚到底仍停在 `scrollHeight=5983` 的封面+目录；修复后同一操作加载出整本，`scrollHeight=333203`、正文可见。
 
+- **点击正文里的脚注 / 目录链接不跳转，反而被弹回书库**（样本：《博弈与社会》等带书内锚点的书）
+
+  正文是 `dangerouslySetInnerHTML` 渲染的，里面的 `<a href="part0004.xhtml#a005">` 走的是浏览器**默认跳转**；而本项目路由用的是 **HashRouter**——hash 就是路由本身。默认跳转把 `location.hash` 从 `#/read/xxx` 改成 `#a005`，`parseHash` 认不出阅读路由，`App` 当场渲染书库：读者点一下脚注就被弹出去了。
+
+  两处修复：
+
+  ① `Reader` 在内容容器上做事件委托（`handleContentClick`），拦下所有 `<a>` 点击——书内链接交给 `OpenedBook.resolveHrefToChapter()` 解析成「章序号 + 章内锚点」后跳转（跨章会先加载目标章），外链新标签页打开；**任何情况下都 `preventDefault`**，绝不让浏览器碰 hash。
+
+  ② 新增 `resolveHrefToChapter()`（`src/lib/epub.ts`）：正文链接是"相对**当前章文件**"的相对路径（`part0004.xhtml`），而 spine 记的是"相对 OPF"的路径（`Text/part0004.xhtml`），解析库的 `resolveHref` 对这类链接**一律返回 `undefined`**（连它文档里的 `epub:` 前缀写法也不认，实测），所以自己归一化匹配——按当前章目录拼路径、解析 `.` / `..`、并收 basename 与全小写兜底键。
+
+  真浏览器（Playwright）实测：导入《博弈与社会》，点击目录页里的 `<a href="part0004.xhtml#a005">`，hash 保持 `#/read/…` 不变、仍停在阅读页且滚动到了目标位置（修复前会被踢回书库）。
+
 ### 新增
 
 - **自定义字体上传**
@@ -80,6 +92,9 @@
 - 新增 `detectContentRange` 与"带正文区间"的 `computeWeightedPercent` 单测（`tests/logic.test.ts`），断言用两本真书的实际权重分布，锁定"目录页划出正文区间"的切分规则。
 - `tests/app-ui.test.tsx` 增加"脏书"回归用例：进度落在末尾 nav 上时，打开的是正文而不是目录；正文区间之后的 nav 页不会被自动加载；另有"首章整页只有 `<div>/<a>` 时滚动仍能推动加载下一章"（用 `Element.prototype` 临时给滚动容器真实尺寸，否则 jsdom 下 `scrollHeight` 恒为 0，测不出这条路）。
 - 新增第三、四本真实样本《The Art of Focus》《策略思维》进入 `tests/real-book.test.ts`，守住"轻量目录页划出正文区间"这条路（与既有样本一样，缺书自动跳过）。
+- `tests/app-ui.test.tsx` 新增"脚注书"回归用例：点书内锚点链接时 `fireEvent.click` 必须返回 `false`（即 `preventDefault` 被调用）且 hash 不被改；点跨章锚点时目标章会被加载（用 `Element.prototype` 临时给滚动容器真实尺寸，避免 jsdom 下 `scrollHeight=0` 让 `pump` 提前把目标章加载完，从而测不出"点击才触发"）。
+  - ⚠️ 踩坑记录：**别用 `findByText` 拿元素再点击** —— 它在 React 异步重渲染的间隙会返回**已脱离文档**的 stale 引用（实测 `document.body.contains(el) === false`），游离元素的事件冒泡不到 React root，`onClick` 根本不触发，会得出"功能没实现"的假结论。用 `container.querySelector(...)` 取当前 DOM 里的元素。
+- `tests/real-book.test.ts` 的《博弈与社会》组新增"书内跨章链接能解析成「章序号 + 锚点」"用例，用真实脏书的 href 写法（相对当前章、带 `../`、纯 `#` 锚点、解析不到的目标）守住解析规则。
 
 ### 文档
 
