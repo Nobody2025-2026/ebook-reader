@@ -46,9 +46,16 @@ jobs:
       - name: Build Tauri app (universal)
         run: npm run tauri build -- --target universal-apple-darwin
 
+      # 生成「给用户看」的发布说明：只保留 CHANGELOG 里的新增/修复等用户视角章节，
+      # 剔除「测试」「文档」这类维护者记录，避免 Release 页被 docs/chore 噪音占满。
+      # 脚本找不到本版本条目会直接失败中断发布——这是故意的：CHANGELOG 没写就不该发版。
+      - name: Generate release notes from CHANGELOG
+        run: node scripts/release-notes.mjs --out release-notes.md
+
       - name: Upload release asset
         uses: softprops/action-gh-release@v2
         with:
           files: src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+          body_path: release-notes.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
