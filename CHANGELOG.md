@@ -28,6 +28,22 @@
 
   顺带加了**封面版本号**：封面算法以后再修正，老书的封面会自动重取，不需要手动删书重导。
 
+- **正文图片全部不显示**（样本：《涛动周期论》46 张图）
+
+  根因在解析库 `@lingo-reader/epub-parser` 0.4.6：它用**模块级全局** `imageRecord` 缓存图片字节、`browserUrlCache` 缓存 blob URL，而 `destroy()` 会 `unlink` 全部条目 + `revokeBlobUrls()` 清空全局。本项目 `openEpub` 会被多次调用（导入 / 进阅读页 / 后台补封面），任一次 `destroy` 都清空全局状态，已渲染的 `<img src="blob:…">` 当场变成 0 字节空 blob（真浏览器实测 `naturalWidth=0`、fetch 回来 `byteLength=0`）。Node 测试走真实文件系统，这类"全局状态被跨实例互踩"的问题永远测不出。
+
+  改为**自建资源层**（`src/lib/resources.ts`）：直接解 EPUB 的 zip 字节，把章节里的 `<img src>`、SVG `<image href>`、外链 CSS 的 `url()` 换成我们自己控制的地址（浏览器用 blob、Node 退化成 data URL）。地址生命周期归每本书自己管，只有这本书 `destroy` 时才 `revoke`，跨实例互不干扰；与封面那条路同源。
+
+- **部分 EPUB 无法导入**（样本：《巴菲特致股东的信（原书第4版）》）
+
+  解析库 `parseGuide()` 见到 `<guide>` 里没有 `<reference>` 子元素会**直接抛错**，整本书打不开。但空的 `<guide></guide>` 是**完全合法的 EPUB 2 结构**（calibre 转换产物常见）。新增 `fixEpubBytes`：导入前解 zip 检测并剔除空 `<guide>`，重新打包成新字节（level 0 不重压），绝大多数书零开销返回 `undefined` 用原文件。
+
+- **翻页滚到底卡死、只能上翻**（样本：《笔记的方法》卡在 5.6%）
+
+  旧实现两个缺陷叠加：① `loadChapter` 守卫 `|| loadingRef.current` 把忙时的并发请求**直接丢弃**（是丢弃不是排队）；② `IntersectionObserver` 只在交叉状态"变化"时回调，effect 依赖 `[loaded]` 每加载一章就 `disconnect` 再 `observe`，若哨兵仍在视口内（状态没变）浏览器不再补发回调。于是"请求被丢 + 之后再无回调" → 加载链永久断开，滚到底顶住；只有把哨兵滚出视口再滚回才有概率恢复。
+
+  新方案：滚动位置是**连续可查量**，不依赖事件是否补发。`loadChapter` 改用 `inFlightRef`（按章节 index 记的集合）替代全局布尔量——同章只发一次请求，但不同章可排队；新增 `pump()` 从已加载末尾往后补相邻未加载章，每次加载完由 `[loaded]` effect 复查，天然自愈；`handleScroll` 触发 `pump`，移除 `IntersectionObserver` 与哨兵 div。
+
 ### 新增
 
 - **自定义字体上传**
@@ -43,6 +59,9 @@
 - 新增 `tests/sanitize.test.ts`（内联排版剥离，11 例）。
 - 新增第二本真实样本《博弈与社会》进入回归测试，专门守住"封面走 OPF meta 声明"这条路。
 - 新增 `tests/settings.test.ts`（字体栈解析 + 归一化迁移，10 例）、`tests/customFont.test.ts`（字体增删查 + FontFace 注册，5 例）。
+- 新增 `tests/resources.test.ts`（自建资源层：zip 解包、相对路径解析、魔数兜底 MIME、图片/SVG/CSS 内联替换，覆盖 Node 退化 data URL 路径）。
+- 新增 `tests/guide.test.ts`（空 `<guide></guide>` 与自闭合 `<guide/>` 被 `fixEpubBytes` 剥离、带内容的 guide 与无 guide 返回 `undefined`）。
+- `tests/epub.test.ts`、`tests/real-book.test.ts` 图片断言改为校验 `blob:` / `data:` 前缀（不再误判为 `EPUB/` 开头）。
 
 ### 文档
 
