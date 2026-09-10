@@ -91,6 +91,43 @@ describe('highlight DOM', () => {
     }
   })
 
+  it('多块文章：高亮某一块时，其他块绝不被高亮（Bug #1 回归）', () => {
+    const art = mountArticle('<p>AAA one two</p><p>BBB three four</p><p>CCC five six</p>')
+    document.body.appendChild(art)
+    try {
+      applyHighlights(art, [{ id: '1', blockIndex: 1, startOffset: 0, endOffset: 3 }])
+      // 只有第 2 段（index 1）有 mark
+      const marks = art.querySelectorAll('mark.hl')
+      expect(marks.length).toBe(1)
+      expect(marks[0].textContent).toBe('BBB')
+      // 其他两段保持纯文本，没有任何 <mark>
+      const p0 = art.querySelectorAll(BLOCK_SELECTOR)[0] as HTMLElement
+      const p2 = art.querySelectorAll(BLOCK_SELECTOR)[2] as HTMLElement
+      expect(p0.querySelector('mark.hl')).toBeNull()
+      expect(p2.querySelector('mark.hl')).toBeNull()
+      // 整体文本未被篡改
+      expect(art.textContent).toBe('AAA one twoBBB three fourCCC five six')
+    } finally {
+      document.body.removeChild(art)
+    }
+  })
+
+  it('offset 越界时 clamp，不跨块、不抛错', () => {
+    const art = mountArticle('<p>abcdef</p><p>ghijkl</p>')
+    document.body.appendChild(art)
+    try {
+      // 故意给一个超出 block0 文本长度的 endOffset
+      applyHighlights(art, [{ id: '1', blockIndex: 0, startOffset: 0, endOffset: 999 }])
+      const marks = art.querySelectorAll('mark.hl')
+      expect(marks.length).toBe(1)
+      expect(marks[0].textContent).toBe('abcdef')
+      // 第 2 段不应被波及
+      expect(art.querySelectorAll(BLOCK_SELECTOR)[1].querySelector('mark.hl')).toBeNull()
+    } finally {
+      document.body.removeChild(art)
+    }
+  })
+
   it('unwrapAll 清除所有高亮并恢复纯文本', () => {
     const art = mountArticle('<p>abcdefghij</p>')
     document.body.appendChild(art)

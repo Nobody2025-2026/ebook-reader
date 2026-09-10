@@ -12,7 +12,7 @@ import { prepareChapterHtml } from '../lib/sanitize'
 import {
   addBookmark,
   addAnnotation,
-  exportAnnotations,
+  buildAnnotationMarkdown,
   getBookFile,
   getBookMeta,
   getProgress,
@@ -93,6 +93,11 @@ export function Reader({ bookId, onExit }: Props) {
     mode: 'create' | 'view'
   } | null>(null)
   const [noteDraft, setNoteDraft] = useState('')
+  // 导出面板：先选再导出，避免"点了就静默下个文件、不知道导了啥"
+  const [exportOpen, setExportOpen] = useState(false)
+  const [exportChecked, setExportChecked] = useState<Record<string, boolean>>({})
+  // 导出结果提示（原来完全没有反馈，被当成"没生效"）
+  const [exportMsg, setExportMsg] = useState('')
 
   // ---- 单书全文搜索（P1）----
   const [searchOpen, setSearchOpen] = useState(false)
@@ -677,19 +682,52 @@ export function Reader({ bookId, onExit }: Props) {
     setResults(searchChapters(bookTextsRef.current, q))
   }, [])
 
-  /** 导出本书高亮笔记为 Markdown（纯本地下载，不联网） */
-  const exportNotes = useCallback(async () => {
-    const md = await exportAnnotations(bookId, title)
-    const blob = new Blob([md], { type: 'text/markdown;charset=utf-8' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `${title || '阅读笔记'}-笔记.md`
-    document.body.appendChild(a)
-    a.click()
-    a.remove()
-    URL.revokeObjectURL(url)
-  }, [bookId, title])
+  /** 打开导出面板：默认全选本书所有高亮，用户可取消不想导出的 */
+  const openExportPanel = useCallback(() => {
+    setSearchOpen(false)
+    setTocOpen(false)
+    setSettingsOpen(false)
+    setBookmarksOpen(false)
+    const all: Record<string, boolean> = {}
+    for (const a of annotations) all[a.id] = true
+    setExportChecked(all)
+    setExportOpen(true)
+    setExportMsg('')
+  }, [annotations])
+
+  /** 导出勾选的高亮笔记为 Markdown（纯本地下载，不联网） */
+  const exportNotes = useCallback(
+    async (ids: string[]) => {
+      const chosen = annotations.filter((a) => ids.includes(a.id))
+      if (chosen.length === 0) {
+        setExportMsg('还没勾选任何高亮')
+        return
+      }
+      const md = buildAnnotationMarkdown(chosen, title)
+      const blob = new Blob([md], { type: 'text/markdown;charset=utf-8' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `${title || '阅读笔记'}-笔记.md`
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(url)
+      // 明确的成功反馈 + 数量，替代原来的静默下载
+      const withNote = chosen.filter((x) => x.note?.trim()).length
+      setExportMsg(
+        `已导出 ${chosen.length} 条高亮${withNote ? `（含 ${withNote} 条笔记）` : ''}`,
+      )
+    },
+    [annotations, title],
+  )
+
+  // 导出提示 2.5 秒后自动消失
+  useEffect(() => {
+    if (!exportMsg) return
+    const t = setTimeout(() => setExportMsg(''), 2500)
+    return () => clearTimeout(t)
+  }, [exportMsg])
 
   /** 跳到书签位置：先确保章节已加载，再滚到那一块 */
   const goToBookmark = useCallback(
@@ -770,6 +808,21 @@ export function Reader({ bookId, onExit }: Props) {
       )
     }
   }, [loaded, annotations])
+
+  // 点浮层外面就关掉笔记浮层。
+  // 之前只有浮层里的"关闭"按钮能关，点正文其他地方浮层会一直挂着，
+  // 看着像"关不掉"；这里补一条最符合直觉的关闭路径。
+  useEffect(() => {
+    if (!activeAnn) return
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as HTMLElement | null
+      if (t?.closest?.('.ann-popover')) return
+      setActiveAnn(null)
+    }
+    // 用捕获阶段，避免正文里的 handler 先 stopPropagation 导致收不到
+    document.addEventListener('mousedown', onDown, true)
+    return () => document.removeEventListener('mousedown', onDown, true)
+  }, [activeAnn])
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -877,11 +930,11 @@ export function Reader({ bookId, onExit }: Props) {
         </button>
         <button
           className="btn btn-ghost"
-          onClick={() => void exportNotes()}
-          title="导出高亮与笔记（Markdown）"
+          onClick={openExportPanel}
+          title="选择并导出高亮与笔记（Markdown）"
           disabled={annotations.length === 0}
         >
-          导出
+          导出{annotations.length > 0 ? ` ${annotations.length}` : ''}
         </button>
         <span className="reader-percent">{percent.toFixed(1)}%</span>
       </header>
@@ -1189,6 +1242,80 @@ export function Reader({ bookId, onExit }: Props) {
             </div>
           </aside>
         )}
+
+        {exportOpen && (
+          <aside className="search-panel export-panel">
+            <div className="search-header">
+              <span>导出高亮与笔记</span>
+              <button
+                className="btn btn-ghost"
+                onClick={() => setExportOpen(false)}
+                title="关闭"
+              >
+                ×
+              </button>
+            </div>
+            <div className="export-toolbar">
+              <label className="export-check">
+                <input
+                  type="checkbox"
+                  checked={
+                    annotations.length > 0 &&
+                    annotations.every((a) => exportChecked[a.id])
+                  }
+                  onChange={(e) => {
+                    const next: Record<string, boolean> = {}
+                    for (const a of annotations) next[a.id] = e.target.checked
+                    setExportChecked(next)
+                  }}
+                />
+                全选（{annotations.length} 条）
+              </label>
+            </div>
+            <div className="search-list">
+              {annotations.length === 0 ? (
+                <p className="search-empty">还没有高亮。</p>
+              ) : (
+                annotations.map((a) => (
+                  <label key={a.id} className="export-item">
+                    <input
+                      type="checkbox"
+                      checked={!!exportChecked[a.id]}
+                      onChange={(e) =>
+                        setExportChecked((prev) => ({ ...prev, [a.id]: e.target.checked }))
+                      }
+                    />
+                    <span className="export-item__body">
+                      <span className="search-item__chapter">第 {a.chapterIndex + 1} 章</span>
+                      <span className="export-item__text">
+                        {a.text.length > 40 ? `${a.text.slice(0, 40)}…` : a.text}
+                      </span>
+                      {a.note?.trim() ? (
+                        <span className="export-item__note">📝 {a.note}</span>
+                      ) : null}
+                    </span>
+                  </label>
+                ))
+              )}
+            </div>
+            <div className="export-footer">
+              <span className="export-count">
+                已选 {annotations.filter((a) => exportChecked[a.id]).length} 条
+              </span>
+              <button
+                className="btn"
+                onClick={() =>
+                  void exportNotes(annotations.filter((a) => exportChecked[a.id]).map((a) => a.id))
+                }
+                disabled={annotations.filter((a) => exportChecked[a.id]).length === 0}
+              >
+                导出选中
+              </button>
+            </div>
+          </aside>
+        )}
+
+        {exportMsg && <div className="export-toast">{exportMsg}</div>}
 
         {activeAnn && (
           <div

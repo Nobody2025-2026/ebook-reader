@@ -7,9 +7,26 @@
 //
 // 重绘是幂等的：每次先把旧 <mark> 拆掉（unwrapAll），再按锚点重新包裹，
 // 所以多次调用、多次重渲染都不会累积、不会错位。
+//
+// ⚠️ 偏移口径一致性（曾导致「其他段落被高亮」的 Bug）：
+// 创建选区时算偏移、与重绘时还原偏移，必须使用**同一套计数**——
+// 即「块内所有文本节点的 .data.length 累加」。
+// 早期版本创建时用了 range.toString().length，而重绘用的是文本节点累加；
+// range.toString() 会把 <br> 渲染成 \n、折叠/转换空白，两者对不上，
+// 于是高亮偏移错位、wrapRange 越界跨块，把不相关的段落也高亮了。
+// 现在统一走文本节点累加，并在越界处 clamp，杜绝跨块包裹。
 
 /** 与 progress.ts / Reader.tsx 的 collectBlocks 共用同一套块级选择器 */
 export const BLOCK_SELECTOR = 'p, h1, h2, h3, h4, h5, h6, li, blockquote, pre'
+
+/** 块内所有文本节点的字符总长（UTF-16 码元）。与 offsetWithin / locateInBlock 同一口径 */
+function blockTextLength(block: HTMLElement): number {
+  const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT)
+  let total = 0
+  let n: Node | null
+  while ((n = walker.nextNode())) total += (n as Text).data.length
+  return total
+}
 
 /** 块的纯文本（按文档顺序拼接所有文本节点） */
 export function blockText(block: HTMLElement): string {
@@ -20,12 +37,20 @@ export function blockText(block: HTMLElement): string {
   return t
 }
 
-/** 取容器内某节点/偏移，相对容器文本的字符偏移量（UTF-16 码元，与 text 节点 .data.length 一致） */
+/**
+ * 取容器内某节点/偏移，相对容器文本的字符偏移量。
+ * 必须用文本节点 .data.length 累加（和定位/重绘一致），
+ * 不能用 range.toString()（详见文件头说明）。
+ */
 function offsetWithin(block: HTMLElement, node: Node, offset: number): number {
-  const range = document.createRange()
-  range.selectNodeContents(block)
-  range.setEnd(node, offset)
-  return range.toString().length
+  const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT)
+  let count = 0
+  let n: Node | null
+  while ((n = walker.nextNode())) {
+    if (n === node) return count + offset
+    count += (n as Text).data.length
+  }
+  return count
 }
 
 /** 找到节点所在的块元素（必须是 BLOCK_SELECTOR，且属于 blocks 列表） */
@@ -54,28 +79,32 @@ export function selectionToAnchor(article: HTMLElement, selection: Selection): B
   const endBlock = closestBlock(range.endContainer, blocks)
   if (!startBlock || startBlock !== endBlock) return null
   const blockIndex = blocks.indexOf(startBlock)
+  const total = blockTextLength(startBlock)
   const startOffset = offsetWithin(startBlock, range.startContainer, range.startOffset)
   const endOffset = offsetWithin(startBlock, range.endContainer, range.endOffset)
-  if (startOffset < 0 || endOffset <= startOffset) return null
-  const text = blockText(startBlock).slice(startOffset, endOffset)
+  // clamp 到 [0, total]：越界会让 wrapRange 跨块或塌缩，必须拦掉
+  const s = Math.max(0, Math.min(startOffset, total))
+  const e = Math.max(0, Math.min(endOffset, total))
+  if (e <= s) return null
+  const text = blockText(startBlock).slice(s, e)
   if (!text.trim()) return null
-  return { blockIndex, startOffset, endOffset, text }
+  return { blockIndex, startOffset: s, endOffset: e, text }
 }
 
-/** 把块内字符偏移换算成 (文本节点, 节点内偏移) */
+/** 把块内字符偏移换算成 (文本节点, 节点内偏移)；超出总长则 clamp 到末尾 */
 function locateInBlock(
   block: HTMLElement,
   charOffset: number,
 ): { node: Text; offset: number } | null {
+  const total = blockTextLength(block)
+  const clamped = Math.max(0, Math.min(charOffset, total))
   const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT)
   let count = 0
   let n: Node | null
   let last: Text | null = null
   while ((n = walker.nextNode())) {
     const len = (n as Text).data.length
-    if (count + len >= charOffset) {
-      return { node: n as Text, offset: charOffset - count }
-    }
+    if (count + len >= clamped) return { node: n as Text, offset: clamped - count }
     count += len
     last = n as Text
   }
@@ -84,7 +113,7 @@ function locateInBlock(
   return null
 }
 
-/** 在块上包裹 [start,end) 为 <mark class="hl">（调用前需先 unwrapAll 保证幂等） */
+/** 在块上包裹 [start,end) 为 <mark class="hl">。调用前需先 unwrapAll 保证幂等。 */
 function wrapRange(
   block: HTMLElement,
   start: number,
@@ -95,6 +124,10 @@ function wrapRange(
   const a = locateInBlock(block, start)
   const b = locateInBlock(block, end)
   if (!a || !b) return
+  // 两个端点都必须在这个 block 内，杜绝跨块包裹（曾导致其他段落被高亮）
+  if (!block.contains(a.node) || !block.contains(b.node)) return
+  // 同节点且起点>=终点 → 塌缩，跳过
+  if (a.node === b.node && a.offset >= b.offset) return
   const range = document.createRange()
   try {
     range.setStart(a.node, a.offset)
@@ -120,7 +153,11 @@ export function unwrapAll(article: HTMLElement): void {
     if (!parent) continue
     while (m.firstChild) parent.insertBefore(m.firstChild, m)
     parent.removeChild(m)
-    ;(parent as HTMLElement).normalize?.()
+    try {
+      ;(parent as HTMLElement).normalize?.()
+    } catch {
+      /* noop */
+    }
   }
 }
 
@@ -139,13 +176,16 @@ export function applyHighlights(
   for (const [blockIndex, list] of byBlock) {
     const block = blocks[blockIndex]
     if (!block) continue
+    const total = blockTextLength(block)
     const sorted = [...list].sort((x, y) => x.startOffset - y.startOffset)
     // 简单重叠保护：跳过与已包裹区间重叠的高亮，避免嵌套 <mark>
     let coveredEnd = -1
     for (const ann of sorted) {
-      if (ann.startOffset < coveredEnd) continue
-      wrapRange(block, ann.startOffset, ann.endOffset, ann.id, ann.color)
-      coveredEnd = ann.endOffset
+      const s = Math.max(0, Math.min(ann.startOffset, total))
+      const e = Math.max(0, Math.min(ann.endOffset, total))
+      if (e <= s || s < coveredEnd) continue // 越界或重叠跳过
+      wrapRange(block, s, e, ann.id, ann.color)
+      coveredEnd = e
     }
   }
 }

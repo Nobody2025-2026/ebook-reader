@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import { clear } from 'idb-keyval'
 import {
   addAnnotation,
+  buildAnnotationMarkdown,
   deleteBook,
   exportAnnotations,
   listAnnotations,
@@ -77,6 +78,30 @@ describe('annotations storage', () => {
     expect(md).toContain('# 测试书')
     expect(md).toContain('> abcd')
     expect(md).toContain('笔记一')
+  })
+
+  it('buildAnnotationMarkdown 只渲染勾选的那几条（支持选择性导出）', () => {
+    const a1 = ann({ id: '1', chapterIndex: 0, blockIndex: 0, startOffset: 0, endOffset: 4, text: 'abcd' })
+    const a2 = ann({
+      id: '2',
+      chapterIndex: 1,
+      blockIndex: 0,
+      startOffset: 0,
+      endOffset: 3,
+      text: 'xyz',
+      note: '笔记二',
+    })
+    // 只勾选第二条：应当只出现第二条，未勾选的绝不混入
+    const md = buildAnnotationMarkdown([a2], '测试书')
+    expect(md).toContain('> xyz')
+    expect(md).toContain('笔记二')
+    expect(md).toContain('第 2 章')
+    expect(md).not.toContain('abcd')
+
+    // 两条都勾选：两条都在
+    const mdAll = buildAnnotationMarkdown([a1, a2], '测试书')
+    expect(mdAll).toContain('> abcd')
+    expect(mdAll).toContain('> xyz')
   })
 
   it('空书导出也给出友好提示', async () => {

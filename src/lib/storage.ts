@@ -209,9 +209,16 @@ export async function removeAnnotation(bookId: string, id: string): Promise<void
  * 这是 PRD 砍掉的"云同步/跨设备"的本地替代：笔记留在你浏览器，
  * 想备份就导出一份 .md。返回 Markdown 文本，由调用方触发下载。
  */
-export async function exportAnnotations(bookId: string, title: string): Promise<string> {
-  const list = await listAnnotations(bookId)
+/**
+ * 把任意一组高亮渲染成 Markdown。抽成纯函数是为了支持"只导出勾选的那几条"：
+ * 调用方自己筛好数组传进来即可，不必再从 IndexedDB 全量读一遍。
+ * 按章节归并，每条先列高亮原文（引用块），再列笔记正文。
+ */
+export function buildAnnotationMarkdown(anns: Annotation[], title: string): string {
   const lines: string[] = [`# ${title || '阅读笔记'} — 高亮与笔记`, '']
+  const list = [...anns].sort(
+    (a, b) => a.chapterIndex - b.chapterIndex || a.startOffset - b.startOffset,
+  )
   if (list.length === 0) {
     lines.push('_还没有高亮或笔记。_')
     return lines.join('\n')
@@ -226,6 +233,12 @@ export async function exportAnnotations(bookId: string, title: string): Promise<
     if (ann.note) lines.push(ann.note, '')
   }
   return lines.join('\n')
+}
+
+/** 导出整本书的高亮笔记（保留给批量/兼容场景） */
+export async function exportAnnotations(bookId: string, title: string): Promise<string> {
+  const list = await listAnnotations(bookId)
+  return buildAnnotationMarkdown(list, title)
 }
 
 // ---- 阅读时长统计（P1）----

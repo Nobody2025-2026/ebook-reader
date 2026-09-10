@@ -788,6 +788,83 @@ body {
   border-color: var(--accent);
 }
 
+/* ---- 导出面板（选哪几条导出）---- */
+
+.export-toolbar {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.export-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.export-item {
+  display: flex;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.export-item:hover {
+  background: var(--bg);
+}
+
+.export-item__body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.export-item__text {
+  color: var(--fg);
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.export-item__note {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.export-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--line);
+}
+
+.export-count {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+/* 导出结果提示：原来静默下载，用户以为没生效 */
+.export-toast {
+  position: fixed;
+  right: 20px;
+  bottom: 24px;
+  z-index: 60;
+  padding: 10px 16px;
+  border-radius: 8px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+  font-size: 14px;
+  color: var(--fg);
+}
+
 .search-list {
   flex: 1;
   overflow-y: auto;
