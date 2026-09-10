@@ -306,6 +306,13 @@ export function Reader({ bookId, onExit }: Props) {
     const container = containerRef.current
     if (!container) return
 
+    // ⚠️ 先补加载，再看能不能记进度——**这两步的顺序不能反**。
+    // 有些章整页是 <div>/<a> 排版（calibre 生成的目录页就是这样，一个
+    // BLOCK_SELECTOR 都匹配不到），若把补加载放在 `blocks.length === 0`
+    // 的提前返回之后，滚动就永远推不动加载链 → 卡在"只有目录页、翻不动"
+    // （真实样本：《策略思维》spine[1] 的 Contents 页）。
+    void pump()
+
     const blocks = collectBlocks()
     if (blocks.length === 0) return
 
@@ -333,9 +340,6 @@ export function Reader({ bookId, onExit }: Props) {
     }
     if (saveTimer.current) clearTimeout(saveTimer.current)
     saveTimer.current = setTimeout(flushProgress, 500)
-
-    // 顺手补加载：滚动位置是连续量，不像 IntersectionObserver 那样可能漏掉回调
-    void pump()
   }, [collectBlocks, flushProgress, pump])
 
   // 更新排版设置：立即生效 + 防抖落盘（拖动滑条会高频触发）
