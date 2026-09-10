@@ -2,8 +2,10 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { openEpub, type ChapterRef, type OpenedBook, type TocEntry } from '../lib/epub'
 import {
   computeWeightedPercent,
+  detectContentRange,
   findAnchorBlock,
   type BlockRect,
+  type ContentRange,
   type ReadingProgress,
 } from '../lib/progress'
 import { prepareChapterHtml } from '../lib/sanitize'
@@ -70,6 +72,7 @@ export function Reader({ bookId, onExit }: Props) {
   const bookRef = useRef<OpenedBook | null>(null)
   const chaptersRef = useRef<ChapterRef[]>([])
   const weightsRef = useRef<number[]>([])
+  const contentRangeRef = useRef<ContentRange>({ first: 0, last: 0 })
   const containerRef = useRef<HTMLDivElement | null>(null)
   const nodesRef = useRef(new Map<number, HTMLElement>())
   const loadedIdxRef = useRef(new Set<number>())
@@ -140,6 +143,10 @@ export function Reader({ bookId, onExit }: Props) {
     if (!chapters.length) return false
     if (!loadedIdxRef.current.size) return false // 首章由打开流程负责，pump 不抢
     const next = Math.max(...loadedIdxRef.current) + 1
+    // 不把正文区间**之后**的章节（nav / 索引 / 版权页）当正文加载：
+    // ① 它们渲染成一长串链接很丑；② 滚到它们时进度会被顶到 100%；
+    // ③ 进度可能被存到这些页上，下次打开就"只有目录页、翻不动"。
+    if (next > contentRangeRef.current.last) return false
     if (next >= chapters.length) return false
     const container = containerRef.current
     if (!container) return true
@@ -192,21 +199,37 @@ export function Reader({ bookId, onExit }: Props) {
         bookRef.current = book
         chaptersRef.current = book.chapters
         weightsRef.current = book.chapterWeights
+        contentRangeRef.current = detectContentRange(book.chapterWeights)
         setToc(book.toc)
         setTitle(book.meta.title)
         setBookmarks(await listBookmarks(bookId))
 
-        const start = Math.min(Math.max(progress?.chapterIndex ?? 0, 0), book.chapters.length - 1)
+        // 恢复进度时把位置夹到正文区间，避免打开后落在封面/目录/版权/索引页
+        // （脏 EPUB 常把 nav.xhtml 放在 spine 末尾，存进去后下次打开就"只有目录、翻不动"）。
+        // 首次打开（无进度）仍从封面 0 开始，不要一上来就跳过封面。
+        const range = contentRangeRef.current
+        const rawStart = progress?.chapterIndex ?? 0
+        const start = progress ? Math.min(Math.max(rawStart, range.first), range.last) : 0
+        const startBlock = rawStart === start ? Math.max(progress?.blockIndex ?? 0, 0) : 0
         setCurrentChapter(start)
         if (progress) {
           pendingRestore.current = {
             chapterIndex: start,
-            blockIndex: Math.max(progress.blockIndex, 0),
+            blockIndex: startBlock,
           }
         }
         setPercent(progress?.percent ?? 0)
 
         await loadChapter(start)
+        // 恢复位置较深时，也加载靠前章节，避免只能往后翻、回不去。
+        // start 较小（<=10）时把 0..start 全前置加载，中间无空洞。
+        if (start > 0 && start <= 10) {
+          for (let i = 0; i < start; i++) {
+            if (!loadedIdxRef.current.has(i)) await loadChapter(i)
+          }
+        } else if (start > 0 && !loadedIdxRef.current.has(0)) {
+          await loadChapter(0)
+        }
         if (!cancelled) setStatus('ready')
       } catch (err) {
         if (!cancelled) {
@@ -293,13 +316,18 @@ export function Reader({ bookId, onExit }: Props) {
     const currentBlocks =
       nodesRef.current.get(anchor.chapterIndex)?.querySelectorAll(BLOCK_SELECTOR).length ?? 0
     const withinRatio = currentBlocks > 0 ? anchor.blockIndex / currentBlocks : 0
-    const pct = computeWeightedPercent(anchor.chapterIndex, withinRatio, weightsRef.current)
+    const range = contentRangeRef.current
+    const pct = computeWeightedPercent(anchor.chapterIndex, withinRatio, weightsRef.current, range)
+    // 存进度时把位置夹回正文区间：即使读者滚到封面/目录/nav 上，
+    // 落盘的仍是最近的正文位置，下次打开不会停在目录页。
+    const reportChapter = Math.min(Math.max(anchor.chapterIndex, range.first), range.last)
+    const reportBlock = anchor.chapterIndex === reportChapter ? anchor.blockIndex : 0
     setPercent(pct)
-    setCurrentChapter(anchor.chapterIndex)
+    setCurrentChapter(reportChapter)
 
     latestProgress.current = {
-      chapterIndex: anchor.chapterIndex,
-      blockIndex: anchor.blockIndex,
+      chapterIndex: reportChapter,
+      blockIndex: reportBlock,
       percent: pct,
       updatedAt: Date.now(),
     }

@@ -109,6 +109,41 @@ export function computePercent(
 }
 
 /**
+ * 内容范围：去掉封面/目录/版权/索引等边缘轻量章节后，真正的阅读正文区间。
+ * 很多 EPUB（尤其是 z-library 转换版）把 nav.xhtml 放在 spine 末尾，
+ * 直接按 spine 顺序算百分比会让"目录页"显示 99%+；恢复进度时如果落在
+ * 这些边缘章节上，用户打开就看见一个目录且"无法往前翻"。
+ *
+ * 检测逻辑：从两端向中间扫，去掉权重明显低于平均值的章节。
+ * ratio 默认 0.05：轻量章节 < 平均权重的 5% 即视为边缘物质。
+ */
+export interface ContentRange {
+  first: number
+  last: number
+}
+
+export function detectContentRange(
+  weights: number[],
+  edgeRatio = 0.05,
+): ContentRange {
+  if (weights.length === 0) return { first: 0, last: -1 }
+  const total = weights.reduce((sum, w) => sum + w, 0)
+  if (total <= 0) return { first: 0, last: weights.length - 1 }
+
+  const avg = total / weights.length
+  const threshold = edgeRatio * avg
+
+  let first = 0
+  while (first < weights.length && weights[first] < threshold) first++
+  let last = weights.length - 1
+  while (last >= 0 && weights[last] < threshold) last--
+
+  // 极端情况：所有章节都低于阈值，说明内容本身就很零碎，不要全 trim
+  if (first > last) return { first: 0, last: weights.length - 1 }
+  return { first, last }
+}
+
+/**
  * 按字数加权的全书百分比。
  *
  * 为什么需要它：转换版 EPUB 常把全书塞进一个 spine 项
@@ -118,19 +153,39 @@ export function computePercent(
  *
  * weights[i] = 第 i 章的纯文字数（0 表示空章/未数到）。
  * 权重全 0（解压失败等极端情况）时退化为按章等权，保证总有合理输出。
+ *
+ * contentRange 可选：传入 detectContentRange 的结果后，百分比只在正文区间
+ * 内计算。
+ * - 落在区间**之前**（封面/目录/版权页）：算 0%。
+ * - 落在区间**之后**（nav/索引/尾页）：算 100%。
+ * - 落在区间内：按区间内累计字数 / 区间总字数。
+ * 这样"滚到末尾的 nav 页"不会把进度顶到 100%——因为它本来就在正文区间外。
  */
 export function computeWeightedPercent(
   chapterIndex: number,
   withinRatio: number,
   weights: number[],
+  contentRange?: ContentRange,
 ): number {
-  const total = weights.reduce((sum, w) => sum + w, 0)
   if (weights.length === 0) return 0
+  const total = weights.reduce((sum, w) => sum + w, 0)
   if (total <= 0) return computePercent(chapterIndex, weights.length, withinRatio)
 
-  const idx = Math.min(Math.max(chapterIndex, 0), weights.length - 1)
+  const range =
+    contentRange && contentRange.last >= contentRange.first
+      ? contentRange
+      : { first: 0, last: weights.length - 1 }
+
+  if (chapterIndex < range.first) return 0
+  if (chapterIndex > range.last) return 100
+
+  const contentTotal = weights
+    .slice(range.first, range.last + 1)
+    .reduce((sum, w) => sum + w, 0)
+  if (contentTotal <= 0) return computePercent(chapterIndex, weights.length, withinRatio)
+
   let before = 0
-  for (let i = 0; i < idx; i++) before += weights[i]
-  const within = weights[idx] * Math.min(Math.max(withinRatio, 0), 1)
-  return Math.min(Math.max(((before + within) / total) * 100, 0), 100)
+  for (let i = range.first; i < chapterIndex; i++) before += weights[i]
+  const within = weights[chapterIndex] * Math.min(Math.max(withinRatio, 0), 1)
+  return Math.min(Math.max(((before + within) / contentTotal) * 100, 0), 100)
 }
