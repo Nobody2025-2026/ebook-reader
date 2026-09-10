@@ -21,7 +21,7 @@ import {
   type BookMeta,
 } from '../src/lib/storage'
 
-const { openEpubMock, mockBook, furnitureBook } = vi.hoisted(() => {
+const { openEpubMock, mockBook, furnitureBook, divOnlyBook } = vi.hoisted(() => {
   const openEpubMock = vi.fn()
   const mockBook = {
     meta: { title: '测试书', author: '主上大人', language: 'zh', cover: undefined },
@@ -58,7 +58,25 @@ const { openEpubMock, mockBook, furnitureBook } = vi.hoisted(() => {
     resolveHref: () => undefined,
     destroy: vi.fn(),
   }
-  return { openEpubMock, mockBook, furnitureBook }
+  // 首章整页只有 <div>/<a>（calibre 生成的目录页就长这样），一个 BLOCK_SELECTOR
+  // 都匹配不到。复现 2026-09-10 的 Bug：这种章一出现，"滚动→补加载"这条路就断，
+  // 后面几章永远加载不出来（《策略思维》"打开只有目录页、翻不动"）。
+  const divOnlyBook = {
+    meta: { title: '纯div首章', author: 'x', language: 'zh', cover: undefined },
+    chapters: [
+      { id: 'tocdiv', label: '目录' },
+      { id: 'c1', label: '第一章' },
+    ],
+    chapterWeights: [10, 10],
+    toc: [],
+    loadChapter: async (id: string) => ({
+      html: id === 'tocdiv' ? '<div class="toc-page"><a href="#x">目录项</a></div>' : `<p>${id} 的正文</p>`,
+      css: [],
+    }),
+    resolveHref: () => undefined,
+    destroy: vi.fn(),
+  }
+  return { openEpubMock, mockBook, furnitureBook, divOnlyBook }
 })
 
 vi.mock('../src/lib/epub', () => ({ openEpub: openEpubMock }))
@@ -205,6 +223,37 @@ describe('阅读器', () => {
     await waitFor(() => expect(screen.getByText('body 的正文')).toBeInTheDocument())
     expect(screen.getByText('cover 的正文')).toBeInTheDocument()
     expect(screen.queryByText('nav 的正文')).not.toBeInTheDocument()
+  })
+
+  it('首章整页只有 <div>/<a>（无块级元素）时，滚动仍能推动加载下一章', async () => {
+    await saveBook(meta, new File(['a'], 'book.epub'))
+    openEpubMock.mockResolvedValue(divOnlyBook)
+
+    // 给滚动容器真实尺寸。jsdom 里 scrollHeight 恒为 0 → remain 永远低于阈值 →
+    // pump 挂载后一口气加载完，就测不出"靠滚动推动加载"这条路了。
+    const SH = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollHeight')
+    const CH = Object.getOwnPropertyDescriptor(Element.prototype, 'clientHeight')
+    Object.defineProperty(Element.prototype, 'scrollHeight', { configurable: true, get: () => 10000 })
+    Object.defineProperty(Element.prototype, 'clientHeight', { configurable: true, get: () => 600 })
+    try {
+      const { container } = render(<Reader bookId="b1" onExit={vi.fn()} />)
+      // 只加载了首章（纯 div 的目录页）：离底部还远，pump 按阈值设计停住
+      await waitFor(() => expect(screen.getByText('目录项')).toBeInTheDocument())
+      expect(screen.queryByText('c1 的正文')).not.toBeInTheDocument()
+
+      // 滚到底：handleScroll 必须**先**跑 pump 再判 blocks，
+      // 否则 blocks 为空就会提前返回，加载链断在这里（回归点）
+      const scroller = container.querySelector('.reader-scroll') as HTMLElement
+      scroller.scrollTop = 9400
+      fireEvent.scroll(scroller)
+
+      await waitFor(() => expect(screen.getByText('c1 的正文')).toBeInTheDocument())
+    } finally {
+      if (SH) Object.defineProperty(Element.prototype, 'scrollHeight', SH)
+      else Reflect.deleteProperty(Element.prototype, 'scrollHeight')
+      if (CH) Object.defineProperty(Element.prototype, 'clientHeight', CH)
+      else Reflect.deleteProperty(Element.prototype, 'clientHeight')
+    }
   })
 
   it('滚动后把进度写进存储', async () => {
