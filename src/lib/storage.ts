@@ -22,6 +22,7 @@ const KEY_FILE = 'file:'
 const KEY_PROGRESS = 'progress:'
 const KEY_BOOKMARKS = 'bookmarks:'
 const KEY_STATS = 'stats:'
+const KEY_ANNOTATIONS = 'annotations:'
 
 /**
  * 书文件以 ArrayBuffer 形式存，不存 Blob。
@@ -126,13 +127,105 @@ export async function updateBookCover(
   await set(KEY_META + id, { ...meta, cover, coverVersion: version })
 }
 
-/** 删书必须连带删进度、书签和阅读统计，否则会留下孤儿记录 */
+/** 删书必须连带删进度、书签、阅读统计和高亮笔记，否则会留下孤儿记录 */
 export async function deleteBook(id: string): Promise<void> {
   await del(KEY_META + id)
   await del(KEY_FILE + id)
   await del(KEY_PROGRESS + id)
   await del(KEY_BOOKMARKS + id)
   await del(KEY_STATS + id)
+  await del(KEY_ANNOTATIONS + id)
+}
+
+// ---- 高亮与笔记（P1）----
+//
+// 字符级锚点：章内某块级元素的 [startOffset, endOffset) 文本区间。
+// 与进度锚点(chapterIndex+blockIndex)同源，只是多了一对字符偏移，足以精确还原高亮。
+
+export interface Annotation {
+  id: string
+  bookId: string
+  chapterIndex: number
+  blockIndex: number
+  startOffset: number
+  endOffset: number
+  /** 高亮的原文（仅用于展示/导出，重绘靠偏移而非文本匹配） */
+  text: string
+  /** 笔记正文（可选） */
+  note?: string
+  /** 高亮底色（CSS color），默认浅黄 */
+  color?: string
+  createdAt: number
+  updatedAt?: number
+}
+
+/** 生成高亮 id（与书签 newBookmarkId 同款简单方案） */
+export function newAnnotationId(): string {
+  return `a_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
+}
+
+export async function listAnnotations(bookId: string): Promise<Annotation[]> {
+  const list = (await get<Annotation[]>(KEY_ANNOTATIONS + bookId)) ?? []
+  return list.sort((a, b) => a.chapterIndex - b.chapterIndex || a.startOffset - b.startOffset)
+}
+
+/** 加高亮。同一区间已存在则不重复写，返回 false 让 UI 提示 */
+export async function addAnnotation(bookId: string, ann: Annotation): Promise<boolean> {
+  const list = (await get<Annotation[]>(KEY_ANNOTATIONS + bookId)) ?? []
+  const dup = list.some(
+    (a) =>
+      a.chapterIndex === ann.chapterIndex &&
+      a.blockIndex === ann.blockIndex &&
+      a.startOffset === ann.startOffset &&
+      a.endOffset === ann.endOffset,
+  )
+  if (dup) return false
+  await set(KEY_ANNOTATIONS + bookId, [...list, ann])
+  return true
+}
+
+export async function updateAnnotationNote(
+  bookId: string,
+  id: string,
+  note: string,
+): Promise<void> {
+  const list = (await get<Annotation[]>(KEY_ANNOTATIONS + bookId)) ?? []
+  await set(
+    KEY_ANNOTATIONS + bookId,
+    list.map((a) => (a.id === id ? { ...a, note, updatedAt: Date.now() } : a)),
+  )
+}
+
+export async function removeAnnotation(bookId: string, id: string): Promise<void> {
+  const list = (await get<Annotation[]>(KEY_ANNOTATIONS + bookId)) ?? []
+  await set(
+    KEY_ANNOTATIONS + bookId,
+    list.filter((a) => a.id !== id),
+  )
+}
+
+/**
+ * 导出单书的高亮笔记为 Markdown（纯本地，不联网、不跨设备）。
+ * 这是 PRD 砍掉的"云同步/跨设备"的本地替代：笔记留在你浏览器，
+ * 想备份就导出一份 .md。返回 Markdown 文本，由调用方触发下载。
+ */
+export async function exportAnnotations(bookId: string, title: string): Promise<string> {
+  const list = await listAnnotations(bookId)
+  const lines: string[] = [`# ${title || '阅读笔记'} — 高亮与笔记`, '']
+  if (list.length === 0) {
+    lines.push('_还没有高亮或笔记。_')
+    return lines.join('\n')
+  }
+  let lastChapter = -1
+  for (const ann of list) {
+    if (ann.chapterIndex !== lastChapter) {
+      lines.push('', `## 第 ${ann.chapterIndex + 1} 章`, '')
+      lastChapter = ann.chapterIndex
+    }
+    lines.push(`> ${ann.text}`, '')
+    if (ann.note) lines.push(ann.note, '')
+  }
+  return lines.join('\n')
 }
 
 // ---- 阅读时长统计（P1）----

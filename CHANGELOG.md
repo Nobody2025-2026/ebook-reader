@@ -18,6 +18,26 @@
 - 新增 `tests/stats.test.ts`（存储层：touchOpen / addReadingSeconds / listStats / 删书级联清理，5 例）。
 - `tests/app-ui.test.tsx` 新增集成用例：打开书进入阅读页会记录一次阅读会话。
 
+### 新增（本轮：高亮与笔记 / 全文搜索）
+
+- **字符级高亮与笔记（P1）**
+  - 在阅读页**框选任意文字**即生成高亮（默认浅黄），点高亮弹出笔记浮层可写 / 改 / 删笔记。
+  - 锚点用「章序号 + 块序号 + 块内字符偏移」精确还原，**不依赖一次性 DOM 包裹**——章节用 `dangerouslySetInnerHTML` 渲染，任何重渲染都会冲掉包裹，所以高亮靠「存锚点 + 加载后 effect 重绘」，重渲染幂等不丢。
+  - 与进度锚点共用同一套 `BLOCK_SELECTOR`，块索引严格对齐。
+  - 数据存 IndexedDB（新增 `annotations:` key），删书级联清理。
+- **单书全文搜索（P1）**
+  - 顶部「搜索」打开面板，输入关键词实时检索**本书**正文（主上大人拍板：仅单书范围），命中按章节列出、关键词高亮，点击跳到对应段落。
+  - 抽取复用 `weights.ts` 的 zip 直读思路，文本只抽一次缓存到内存。
+- **笔记导出（纯本地）**
+  - 顶部「导出」把本书高亮与笔记生成 **Markdown 文件**下载，不联网、不跨设备（PRD 把云同步 / 跨设备砍了，本地备份用导出兜底）。
+
+### 测试
+
+- 新增 `tests/annotations.test.ts`（存储层 CRUD / 去重 / 导出 / 删书级联，5 例）。
+- 新增 `tests/search.test.ts`（htmlToText 清洗 + searchChapters 命中，5 例）。
+- 新增 `tests/highlight.test.ts`（选区→锚点 / applyHighlights 包裹 / 幂等 / 多段 / unwrapAll，5 例）。
+- `tests/app-ui.test.tsx` 新增集成用例：框选生成高亮并持久化、搜索本书返回命中。
+
 ## [0.1.2] — 2026-09-10
 
 ### 修复

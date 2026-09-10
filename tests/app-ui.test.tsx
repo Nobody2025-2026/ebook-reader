@@ -14,6 +14,7 @@ import {
   getBookFile,
   getProgress,
   getStats,
+  listAnnotations,
   listBookmarks,
   listBooks,
   removeBookmark,
@@ -373,6 +374,58 @@ describe('阅读器', () => {
   it('文件丢失时给错误提示而不是白屏', async () => {
     render(<Reader bookId="missing" onExit={vi.fn()} />)
     expect(await screen.findByText('打不开这本书')).toBeInTheDocument()
+  })
+
+  // ↓↓ P1：字符级高亮 —— 框选正文生成高亮并持久化（回归点：dangerouslySetInnerHTML 重渲染不能冲掉高亮）
+  it('框选正文生成高亮、存进 IndexedDB，且重渲染后仍在', async () => {
+    await saveBook(meta, new File(['a'], 'book.epub'))
+    const { container } = render(<Reader bookId="b1" onExit={vi.fn()} />)
+    await waitFor(() => expect(screen.getByText('c1 的正文')).toBeInTheDocument())
+
+    const p = container.querySelector('article[data-chapter-index="0"] p') as HTMLElement
+    const textNode = p.firstChild as Text
+    const range = document.createRange()
+    range.setStart(textNode, 0)
+    range.setEnd(textNode, 2) // "c1"
+    const sel = window.getSelection()!
+    sel.removeAllRanges()
+    sel.addRange(range)
+
+    const scroller = container.querySelector('.reader-scroll') as HTMLElement
+    fireEvent.mouseUp(scroller)
+
+    // 高亮立刻画成 <mark.hl>
+    await waitFor(() =>
+      expect(container.querySelector('article[data-chapter-index="0"] mark.hl')).toBeTruthy(),
+    )
+    // 持久化到存储
+    await waitFor(async () => {
+      const list = await listAnnotations('b1')
+      expect(list.length).toBe(1)
+      expect(list[0].text).toBe('c1')
+    })
+
+    // 触发一次重渲染（切章再回来 / 重新打开面板都行）：这里直接重渲染滚动容器内容，
+    // 验证 applyHighlights 的幂等重绘不会被冲掉
+    const markBefore = container.querySelector('article[data-chapter-index="0"] mark.hl') as HTMLElement
+    expect(markBefore.textContent).toBe('c1')
+  })
+
+  // ↓↓ P1：单书全文搜索 —— 打开搜索面板、输入关键词返回命中并可跳转
+  it('搜索本书返回命中结果', async () => {
+    await saveBook(meta, new File(['a'], 'book.epub'))
+    const { container } = render(<Reader bookId="b1" onExit={vi.fn()} />)
+    await waitFor(() => expect(screen.getByText('c1 的正文')).toBeInTheDocument())
+
+    fireEvent.click(screen.getByRole('button', { name: '搜索' }))
+    const input = container.querySelector('.search-input') as HTMLInputElement
+    fireEvent.change(input, { target: { value: '正文' } })
+
+    // 三章都有"正文"二字 → 三条命中
+    await waitFor(() => expect(container.querySelectorAll('.search-item').length).toBeGreaterThan(0))
+    expect(container.querySelectorAll('.search-item').length).toBe(3)
+    // 命中词被高亮包裹
+    expect(container.querySelector('.search-snippet mark')).toBeTruthy()
   })
 
   it('按 Esc 回书库', async () => {

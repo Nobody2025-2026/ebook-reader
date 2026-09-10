@@ -11,14 +11,21 @@ import {
 import { prepareChapterHtml } from '../lib/sanitize'
 import {
   addBookmark,
+  addAnnotation,
+  exportAnnotations,
   getBookFile,
   getBookMeta,
   getProgress,
+  listAnnotations,
   listBookmarks,
+  newAnnotationId,
+  removeAnnotation,
   removeBookmark,
   saveProgress,
+  updateAnnotationNote,
   addReadingSeconds,
   touchOpen,
+  type Annotation,
 } from '../lib/storage'
 import { makeExcerpt, newBookmarkId, type Bookmark } from '../lib/bookmark'
 import {
@@ -37,10 +44,15 @@ import {
   registerCustomFonts,
   removeCustomFont,
 } from '../lib/customFont'
+import { applyHighlights, selectionToAnchor, type BlockAnchor } from '../lib/highlight'
+import { extractBookTexts, searchChapters, type SearchHit } from '../lib/search'
 
 // 块级元素选择器：覆盖小说/学术书里绝大多数情况。
 // 真实样本《涛动周期论》里就是这几种在撑页面。
-const BLOCK_SELECTOR = 'p, h1, h2, h3, h4, h5, h6, li, blockquote, pre'
+// 注意：必须与 highlight.ts / progress.ts 里用的是**同一个**选择器，
+// 否则高亮的 blockIndex 和进度锚点的 blockIndex 对不上，高亮会画错位置。
+// 所以这里不再重复定义，直接复用 highlight.ts 的 BLOCK_SELECTOR。
+import { BLOCK_SELECTOR } from '../lib/highlight'
 
 interface LoadedChapter {
   index: number
@@ -70,6 +82,24 @@ export function Reader({ bookId, onExit }: Props) {
   const [bookmarks, setBookmarks] = useState<Bookmark[]>([])
   // 书签操作反馈（"已添加" / "这个位置已经有了"），2 秒后自动消失
   const [bookmarkHint, setBookmarkHint] = useState('')
+
+  // ---- 高亮与笔记（P1）----
+  const [annotations, setAnnotations] = useState<Annotation[]>([])
+  // 笔记编辑浮层：框选生成时 mode='create'，点已有高亮时 mode='view'
+  const [activeAnn, setActiveAnn] = useState<{
+    id: string
+    top: number
+    left: number
+    mode: 'create' | 'view'
+  } | null>(null)
+  const [noteDraft, setNoteDraft] = useState('')
+
+  // ---- 单书全文搜索（P1）----
+  const [searchOpen, setSearchOpen] = useState(false)
+  const [query, setQuery] = useState('')
+  const [results, setResults] = useState<SearchHit[]>([])
+  // 搜索文本抽取结果缓存（一本书只抽一次）
+  const bookTextsRef = useRef<string[] | null>(null)
 
   const bookRef = useRef<OpenedBook | null>(null)
   const chaptersRef = useRef<ChapterRef[]>([])
@@ -204,7 +234,9 @@ export function Reader({ bookId, onExit }: Props) {
         contentRangeRef.current = detectContentRange(book.chapterWeights)
         setToc(book.toc)
         setTitle(book.meta.title)
+        bookTextsRef.current = null // 换书了，搜索文本缓存作废
         setBookmarks(await listBookmarks(bookId))
+        setAnnotations(await listAnnotations(bookId))
 
         // 恢复进度时把位置夹到正文区间，避免打开后落在封面/目录/版权/索引页
         // （脏 EPUB 常把 nav.xhtml 放在 spine 末尾，存进去后下次打开就"只有目录、翻不动"）。
@@ -463,6 +495,19 @@ export function Reader({ bookId, onExit }: Props) {
    */
   const handleContentClick = useCallback(
     (e: React.MouseEvent<HTMLDivElement>) => {
+      // 点高亮 → 弹笔记浮层（看/改/删）。必须在 <a> 判断之前，
+      // 否则高亮里若包了链接会被当成书内链接处理。
+      const markEl = (e.target as HTMLElement | null)?.closest?.('mark.hl') as HTMLElement | null
+      if (markEl) {
+        e.preventDefault()
+        const id = markEl.getAttribute('data-ann-id') ?? ''
+        const rect = markEl.getBoundingClientRect()
+        const ann = annotations.find((a) => a.id === id)
+        setActiveAnn({ id, top: rect.top + 8, left: rect.left, mode: 'view' })
+        setNoteDraft(ann?.note ?? '')
+        return
+      }
+
       const link = (e.target as HTMLElement | null)?.closest?.('a') as HTMLAnchorElement | null
       if (!link) return
       const href = link.getAttribute('href') ?? ''
@@ -486,7 +531,7 @@ export function Reader({ bookId, onExit }: Props) {
       )
       if (target) void jumpTo(target.chapterIndex, target.selector)
     },
-    [jumpTo],
+    [jumpTo, annotations],
   )
 
   /** 当前视口顶压着的块。和滚动记进度用同一套定位，保证书签落在读者看到的位置 */
@@ -533,6 +578,118 @@ export function Reader({ bookId, onExit }: Props) {
     },
     [bookId],
   )
+
+  // ===================== 高亮与笔记（P1）=====================
+  //
+  // 字符级：选区 → 锚点(chapterIndex, blockIndex, startOffset, endOffset) → 存 IndexedDB。
+  // 章节进 DOM 后由 applyHighlights 重绘 <mark>，任何重渲染都冲不掉（见 highlight.ts）。
+  // 点已有高亮 → 浮层看/改/删笔记；框选 → 生成高亮并弹出笔记浮层。
+
+  /** 选区生成高亮：在 .reader-scroll 的 onMouseUp 里调用 */
+  const createHighlightFromSelection = useCallback(() => {
+    const sel = window.getSelection()
+    if (!sel || sel.isCollapsed || sel.rangeCount === 0) return
+    const range = sel.getRangeAt(0)
+    const anchorEl =
+      range.commonAncestorContainer.nodeType === Node.TEXT_NODE
+        ? range.commonAncestorContainer.parentElement
+        : (range.commonAncestorContainer as Element)
+    const article = anchorEl?.closest?.('article[data-chapter-index]') as HTMLElement | null
+    if (!article) return
+    const anchor: BlockAnchor | null = selectionToAnchor(article, sel)
+    if (!anchor) return
+    const chapterIndex = Number(article.getAttribute('data-chapter-index'))
+    const id = newAnnotationId()
+    const ann: Annotation = {
+      id,
+      bookId,
+      chapterIndex,
+      blockIndex: anchor.blockIndex,
+      startOffset: anchor.startOffset,
+      endOffset: anchor.endOffset,
+      text: anchor.text,
+      color: 'rgba(255, 224, 102, 0.6)',
+      createdAt: Date.now(),
+    }
+    void addAnnotation(bookId, ann).then((ok) => {
+      if (ok) setAnnotations((prev) => [...prev, ann])
+    })
+    // jsdom 没实现 Range.getBoundingClientRect，浏览器里有；做存在性保护，
+    // 浮层定位拿不到真实坐标时退化为 (0,0)，不影响高亮本身。
+    let rectTop = 0
+    let rectLeft = 0
+    if (typeof range.getBoundingClientRect === 'function') {
+      const r = range.getBoundingClientRect()
+      rectTop = r.top
+      rectLeft = r.left
+    }
+    setActiveAnn({ id, top: rectTop + 8, left: rectLeft, mode: 'create' })
+    setNoteDraft('')
+    sel.removeAllRanges()
+  }, [bookId])
+
+  /** 保存当前浮层里正在编辑的笔记 */
+  const saveNote = useCallback(async () => {
+    if (!activeAnn) return
+    await updateAnnotationNote(bookId, activeAnn.id, noteDraft)
+    setAnnotations((prev) => prev.map((a) => (a.id === activeAnn.id ? { ...a, note: noteDraft } : a)))
+    setActiveAnn(null)
+  }, [activeAnn, bookId, noteDraft])
+
+  /** 删除当前浮层对应的高亮 */
+  const deleteActive = useCallback(async () => {
+    if (!activeAnn) return
+    await removeAnnotation(bookId, activeAnn.id)
+    setAnnotations((prev) => prev.filter((a) => a.id !== activeAnn.id))
+    setActiveAnn(null)
+  }, [activeAnn, bookId])
+
+  /** 跳转搜索结果：先确保章节已加载，再定位到含关键词的块 */
+  const jumpToHit = useCallback(
+    async (hit: SearchHit) => {
+      await jumpTo(hit.chapterIndex)
+      const tries = [0, 80, 250, 700, 1800]
+      tries.forEach((delay) =>
+        setTimeout(() => {
+          const article = nodesRef.current.get(hit.chapterIndex)
+          if (!article) return
+          const blocks = Array.from(article.querySelectorAll(BLOCK_SELECTOR)) as HTMLElement[]
+          const target = blocks.find((b) => b.textContent?.toLowerCase().includes(query.trim().toLowerCase()))
+          if (target && typeof target.scrollIntoView === 'function') {
+            target.scrollIntoView({ block: 'start', behavior: 'auto' })
+          }
+        }, delay),
+      )
+    },
+    [jumpTo, query],
+  )
+
+  /** 跑单书全文搜索（文本抽取结果缓存到 bookTextsRef，一本书只抽一次） */
+  const runSearch = useCallback(async (q: string) => {
+    setQuery(q)
+    if (!q.trim()) {
+      setResults([])
+      return
+    }
+    const book = bookRef.current
+    if (!book) return
+    if (!bookTextsRef.current) bookTextsRef.current = await extractBookTexts(book)
+    setResults(searchChapters(bookTextsRef.current, q))
+  }, [])
+
+  /** 导出本书高亮笔记为 Markdown（纯本地下载，不联网） */
+  const exportNotes = useCallback(async () => {
+    const md = await exportAnnotations(bookId, title)
+    const blob = new Blob([md], { type: 'text/markdown;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${title || '阅读笔记'}-笔记.md`
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(url)
+  }, [bookId, title])
 
   /** 跳到书签位置：先确保章节已加载，再滚到那一块 */
   const goToBookmark = useCallback(
@@ -600,6 +757,19 @@ export function Reader({ bookId, onExit }: Props) {
   useEffect(() => {
     void pump()
   }, [loaded, pump])
+
+  // 章节进 DOM 后重绘高亮（幂等：先拆旧 <mark> 再按锚点重新包裹）。
+  // 依赖 loaded 与 annotations：新章节加载、或增删高亮时都重画。
+  useEffect(() => {
+    for (const ch of loaded) {
+      const article = nodesRef.current.get(ch.index)
+      if (!article) continue
+      applyHighlights(
+        article,
+        annotations.filter((a) => a.chapterIndex === ch.index),
+      )
+    }
+  }, [loaded, annotations])
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -693,6 +863,26 @@ export function Reader({ bookId, onExit }: Props) {
         >
           书签{bookmarks.length > 0 ? ` ${bookmarks.length}` : ''}
         </button>
+        <button
+          className="btn btn-ghost"
+          onClick={() => {
+            setTocOpen(false)
+            setSettingsOpen(false)
+            setBookmarksOpen(false)
+            setSearchOpen((v) => !v)
+          }}
+          title="搜索本书"
+        >
+          搜索
+        </button>
+        <button
+          className="btn btn-ghost"
+          onClick={() => void exportNotes()}
+          title="导出高亮与笔记（Markdown）"
+          disabled={annotations.length === 0}
+        >
+          导出
+        </button>
         <span className="reader-percent">{percent.toFixed(1)}%</span>
       </header>
 
@@ -702,6 +892,7 @@ export function Reader({ bookId, onExit }: Props) {
           ref={containerRef}
           onScroll={handleScroll}
           onClick={handleContentClick}
+          onMouseUp={() => createHighlightFromSelection()}
           style={{
             '--reader-font-size': `${settings.fontSize}px`,
             '--reader-line-height': `${settings.lineHeight}`,
@@ -947,6 +1138,85 @@ export function Reader({ bookId, onExit }: Props) {
               )}
             </div>
           </aside>
+        )}
+
+        {searchOpen && (
+          <aside className="search-panel">
+            <div className="search-header">
+              <span>搜索本书</span>
+              <button className="btn btn-ghost" onClick={() => setSearchOpen(false)} title="关闭搜索">
+                ×
+              </button>
+            </div>
+            <div className="search-box">
+              <input
+                type="search"
+                className="search-input"
+                placeholder="输入关键词，回车搜索"
+                value={query}
+                onChange={(e) => void runSearch(e.target.value)}
+                aria-label="搜索本书"
+              />
+            </div>
+            <div className="search-list">
+              {query.trim() === '' ? (
+                <p className="search-empty">输入关键词检索本书正文。</p>
+              ) : results.length === 0 ? (
+                <p className="search-empty">没找到「{query}」。</p>
+              ) : (
+                results.map((hit, i) => {
+                  const before = hit.snippet.slice(0, hit.matchStart)
+                  const mid = hit.snippet.slice(hit.matchStart, hit.matchEnd)
+                  const after = hit.snippet.slice(hit.matchEnd)
+                  const label = chaptersRef.current[hit.chapterIndex]?.label ?? `第 ${hit.chapterIndex + 1} 章`
+                  return (
+                    <button
+                      key={`${hit.chapterIndex}-${hit.matchOffset}-${i}`}
+                      className="search-item"
+                      onClick={() => void jumpToHit(hit)}
+                      title={label}
+                    >
+                      <span className="search-item__chapter">第 {hit.chapterIndex + 1} 章</span>
+                      <span className="search-snippet">
+                        {before}
+                        <mark>{mid}</mark>
+                        {after}
+                      </span>
+                    </button>
+                  )
+                })
+              )}
+            </div>
+          </aside>
+        )}
+
+        {activeAnn && (
+          <div
+            className="ann-popover"
+            style={{ position: 'fixed', top: activeAnn.top, left: Math.min(activeAnn.left, window.innerWidth - 320) }}
+          >
+            <div className="ann-popover__excerpt">
+              {annotations.find((a) => a.id === activeAnn.id)?.text}
+            </div>
+            <textarea
+              className="ann-popover__note"
+              value={noteDraft}
+              onChange={(e) => setNoteDraft(e.target.value)}
+              placeholder="写点笔记…"
+              autoFocus={activeAnn.mode === 'create'}
+            />
+            <div className="ann-popover__actions">
+              <button className="btn" onClick={() => void saveNote()}>
+                保存
+              </button>
+              <button className="btn btn-ghost" onClick={() => void deleteActive()}>
+                删除
+              </button>
+              <button className="btn btn-ghost" onClick={() => setActiveAnn(null)}>
+                关闭
+              </button>
+            </div>
+          </div>
         )}
       </div>
     </div>
