@@ -62,6 +62,7 @@
 - 新增 `tests/resources.test.ts`（自建资源层：zip 解包、相对路径解析、魔数兜底 MIME、图片/SVG/CSS 内联替换，覆盖 Node 退化 data URL 路径）。
 - 新增 `tests/guide.test.ts`（空 `<guide></guide>` 与自闭合 `<guide/>` 被 `fixEpubBytes` 剥离、带内容的 guide 与无 guide 返回 `undefined`）。
 - `tests/epub.test.ts`、`tests/real-book.test.ts` 图片断言改为校验 `blob:` / `data:` 前缀（不再误判为 `EPUB/` 开头）。
+- `tests/app-ui.test.tsx` 阅读器用例里 `findByText('c1 的正文')` 等改为 `waitFor(() => expect(screen.getByText(...)).toBeInTheDocument())`。原因：`findByText` 底层 `getBy` 在 jsdom 下首检拿不到元素时直接返回 `null` 而不重试，openEpub 异步渲染与查询首检偶发竞态会导致整批测试不稳定；`expect(...).toBeInTheDocument()` 找不到时会抛错，交给 `waitFor` 重试即可稳过。
 
 ### 文档
 

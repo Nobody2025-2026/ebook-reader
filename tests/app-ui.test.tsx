@@ -151,7 +151,12 @@ describe('阅读器', () => {
   it('打开书后渲染出正文', async () => {
     await saveBook(meta, new File(['a'], 'book.epub'))
     render(<Reader bookId="b1" onExit={vi.fn()} />)
-    expect(await screen.findByText('c1 的正文')).toBeInTheDocument()
+    // 比 findByText 更稳：expect 找不到时抛错，waitFor 据此重试，
+    // 避免 jsdom 下 openEpub 异步渲染与查询首检的偶发竞态。
+    await waitFor(
+      () => expect(screen.getByText('c1 的正文')).toBeInTheDocument(),
+      { timeout: 5000 },
+    )
   })
 
   it('没有进度时从头开始，有进度时回到原章节', async () => {
@@ -165,7 +170,7 @@ describe('阅读器', () => {
   it('滚动后把进度写进存储', async () => {
     await saveBook(meta, new File(['a'], 'book.epub'))
     const { container } = render(<Reader bookId="b1" onExit={vi.fn()} />)
-    await screen.findByText('c1 的正文')
+    await waitFor(() => expect(screen.getByText('c1 的正文')).toBeInTheDocument())
 
     const scroller = container.querySelector('.reader-scroll') as HTMLElement
     scroller.scrollTop = 120
@@ -189,7 +194,7 @@ describe('阅读器', () => {
     await saveBook(meta, new File(['a'], 'book.epub'))
     const onExit = vi.fn()
     render(<Reader bookId="b1" onExit={onExit} />)
-    await screen.findByText('c1 的正文')
+    await waitFor(() => expect(screen.getByText('c1 的正文')).toBeInTheDocument())
     fireEvent.keyDown(window, { key: 'Escape' })
     expect(onExit).toHaveBeenCalled()
   })
@@ -197,7 +202,7 @@ describe('阅读器', () => {
   it('方向键/空格翻屏，Home 回开头', async () => {
     await saveBook(meta, new File(['a'], 'book.epub'))
     const { container } = render(<Reader bookId="b1" onExit={vi.fn()} />)
-    await screen.findByText('c1 的正文')
+    await waitFor(() => expect(screen.getByText('c1 的正文')).toBeInTheDocument())
 
     const scroller = container.querySelector('.reader-scroll') as HTMLElement
     // 给滚动容器一个高度，否则 clientHeight=0，翻屏量退化为 200
@@ -228,7 +233,7 @@ describe('阅读器', () => {
   it('打开目录抽屉并点击跳转章节', async () => {
     await saveBook(meta, new File(['a'], 'book.epub'))
     render(<Reader bookId="b1" onExit={vi.fn()} />)
-    await screen.findByText('c1 的正文')
+    await waitFor(() => expect(screen.getByText('c1 的正文')).toBeInTheDocument())
 
     // 点目录按钮，抽屉出现并列出章节
     fireEvent.click(screen.getByRole('button', { name: '目录' }))
@@ -242,7 +247,7 @@ describe('阅读器', () => {
   it('打开排版面板，调整字号和主题', async () => {
     await saveBook(meta, new File(['a'], 'book.epub'))
     const { container } = render(<Reader bookId="b1" onExit={vi.fn()} />)
-    await screen.findByText('c1 的正文')
+    await waitFor(() => expect(screen.getByText('c1 的正文')).toBeInTheDocument())
 
     // 点排版按钮，面板出现
     fireEvent.click(screen.getByRole('button', { name: '排版' }))
