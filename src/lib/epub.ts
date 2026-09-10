@@ -1,7 +1,8 @@
 // EPUB 解析层：封装 @lingo-reader/epub-parser，对上层只暴露"书"的概念。
 // 浏览器传 File，Node 传文件路径——同一套 API，为后期套 Tauri 留口。
 import { initEpubFile, type EpubFile } from '@lingo-reader/epub-parser'
-import { unzipSync } from 'fflate'
+import { unzipSync, zipSync } from 'fflate'
+import { createResourceIndex } from './resources'
 import { computeChapterTextLengths, findEntry, findOpfPath } from './weights'
 
 export interface BookMeta {
@@ -274,6 +275,40 @@ export function normalizeTitle(raw: string | undefined): string {
   return dePrefixed.includes(' ') ? dePrefixed : dePrefixed.replace(/_/g, ' ').trim() || '未命名'
 }
 
+// ============================ OPF 预处理（让脏书能打开） ============================
+//
+// 解析库 0.4.6 的 parseGuide() 见到 <guide> 里没有 <reference> 子元素会**直接抛错**，
+// 于是一本书整本打不开。但空的 <guide></guide> 是**完全合法的 EPUB 2 结构**
+// （calibre 早期版本的转换产物里很常见）——样本：《巴菲特致股东的信（原书第4版）》。
+// 库把"可选结构缺失"当成了致命错误，我们只能自己先把 OPF 修干净再交给它。
+const EMPTY_GUIDE_RE = /<guide\b[^>]*>\s*<\/guide\s*>/i
+const SELF_CLOSING_GUIDE_RE = /<guide\b[^>]*\/>/i
+
+/**
+ * 把会让解析库炸掉的 OPF 结构修掉，重新打包成新的 epub 字节。
+ * @returns 修复后的字节；无需修复或修复失败时返回 undefined（调用方用原文件）
+ */
+export function fixEpubBytes(bytes: Uint8Array): Uint8Array | undefined {
+  try {
+    const files = unzipSync(bytes)
+    const opfPath = findOpfPath(files)
+    const opfEntry = opfPath ? files[opfPath] : undefined
+    if (!opfPath || !opfEntry) return undefined
+
+    const opf = new TextDecoder().decode(opfEntry)
+    if (!EMPTY_GUIDE_RE.test(opf) && !SELF_CLOSING_GUIDE_RE.test(opf)) return undefined
+
+    const fixed = opf.replace(EMPTY_GUIDE_RE, '').replace(SELF_CLOSING_GUIDE_RE, '')
+    if (fixed === opf) return undefined
+
+    files[opfPath] = new TextEncoder().encode(fixed)
+    // level 0 = 只打包不压缩：70MB 的书重压一遍要几十秒，没意义
+    return zipSync(files, { level: 0 })
+  } catch {
+    return undefined
+  }
+}
+
 export interface OpenEpubOptions {
   /**
    * 仅 Node 端生效：解析时图片/CSS 的落盘目录，默认当前目录下的 ./images。
@@ -296,11 +331,47 @@ async function readInputBytes(input: File | string): Promise<Uint8Array> {
   return new Uint8Array(await input.arrayBuffer())
 }
 
+/**
+ * 把修复后的字节变回解析库能吃的输入形态：
+ * 浏览器重建 File；Node 只能吃路径，落到临时目录再传给库（destroy 时删掉）。
+ */
+async function materialize(
+  bytes: Uint8Array,
+  input: File | string,
+): Promise<{ input: File | string; tempPath?: string }> {
+  if (typeof input !== 'string') {
+    return { input: new File([bytes as unknown as BlobPart], input.name, { type: input.type }) }
+  }
+  const [{ mkdtempSync }, { tmpdir }, { join }, { writeFile }] = await Promise.all([
+    import('node:fs'),
+    import('node:os'),
+    import('node:path'),
+    import('node:fs/promises'),
+  ])
+  const tempPath = join(mkdtempSync(join(tmpdir(), 'epub-fix-')), 'fixed.epub')
+  await writeFile(tempPath, bytes)
+  return { input: tempPath, tempPath }
+}
+
+/** XHTML 文件头的 XML 声明 / DOCTYPE：直接塞进 innerHTML 会被当成文本显示出来 */
+const XML_PROLOG_RE = /^\s*(?:<\?xml[^>]*\?>\s*)?(?:<!DOCTYPE[^>]*>\s*)?/i
+
 export async function openEpub(
   input: File | string,
   options: OpenEpubOptions = {},
 ): Promise<OpenedBook> {
-  const epub = await initEpubFile(input as unknown as string, options.resourceSaveDir)
+  // 整个打开过程只读一次原始字节：权重、封面、资源解析都要用
+  const bytes = await readInputBytes(input)
+
+  // 先把会炸的 OPF 结构修掉（绝大多数书这里返回 undefined，零开销）
+  const fixed = fixEpubBytes(bytes)
+  const materialized = fixed ? await materialize(fixed, input) : { input }
+  const tempPath = materialized.tempPath
+
+  const epub = await initEpubFile(
+    materialized.input as unknown as string,
+    options.resourceSaveDir,
+  )
   const metadata = epub.getMetadata()
   const labels = collectTocLabels(epub)
   const spine = epub.getSpine()
@@ -311,12 +382,16 @@ export async function openEpub(
   }))
 
   const idToIndex = new Map(spine.map((item, index) => [item.id, index]))
+  const hrefById = new Map(spine.map((item) => [item.id, String(item.href ?? '')]))
 
   // 字数权重：只解 zip 里的 xhtml 数字，不碰图片，比逐章 loadChapter 便宜得多
   const chapterWeights = computeChapterTextLengths(
-    await readInputBytes(input),
-    spine.map((item) => item.href),
+    bytes,
+    spine.map((item) => String(item.href ?? '')),
   )
+
+  // 图片/CSS 地址自己从 zip 生成，不碰解析库那套会被 destroy 清空的全局缓存
+  const resources = createResourceIndex(bytes)
 
   return {
     meta: {
@@ -329,10 +404,24 @@ export async function openEpub(
     chapterWeights,
     toc: collectToc(epub, idToIndex),
     async loadChapter(id: string) {
+      const href = hrefById.get(id) ?? ''
+      // 优先用 zip 里的原始 html：src 还是书里的相对路径，能自己解析成可靠地址。
+      // 解析库那份里的 src 已经被换成它自己的 blob URL，一旦被 destroy() revoke 就全废了。
+      const raw = resources.rawChapterHtml(href)
+      if (raw) {
+        return { html: resources.inlineAssets(raw.replace(XML_PROLOG_RE, ''), href), css: [] }
+      }
+      // zip 里定位不到（href 太脏）才退回解析库的输出，老行为兜底
       const { html, css } = await epub.loadChapter(id)
       return { html, css: css ?? [] }
     },
     resolveHref: (href: string) => epub.resolveHref(href),
-    destroy: () => epub.destroy(),
+    destroy() {
+      epub.destroy()
+      resources.revoke()
+      if (tempPath) {
+        void import('node:fs').then((fs) => fs.rmSync(tempPath, { force: true }))
+      }
+    },
   }
 }

@@ -38,17 +38,14 @@ export function textLength(html: string): number {
 }
 
 /**
- * 在 zip 条目里找章节文件。解析器返回的 href 很"脏"，实测见过这些形态：
- * - "epub:OEBPS/text00001.html"（带前缀且已是 zip 根路径，《策略思维》）
- * - "chapter1.xhtml"（相对 OPF 目录，规范写法）
- * - 中文文件名可能是 percent-encoded
- * 所以按候选清单逐个试，找不到就放弃这章。
+ * 在 zip 条目里定位 href 对应的**条目名**（不读内容）。
+ * 需要"路径"而不是"字节"的场合用这个（例如给图片做 data URL 缓存 key）。
  */
-export function findEntry(
+export function resolveZipPath(
   files: Record<string, Uint8Array>,
   opfDir: string,
   href: string,
-): Uint8Array | undefined {
+): string | undefined {
   const clean = href.split('#')[0].replace(/^epub:/, '')
   const candidates = [
     normalizeZipPath(clean),
@@ -66,9 +63,25 @@ export function findEntry(
     // 非法编码就跳过解码候选
   }
   for (const name of candidates) {
-    if (files[name]) return files[name]
+    if (files[name]) return name
   }
   return undefined
+}
+
+/**
+ * 在 zip 条目里找章节文件。解析器返回的 href 很"脏"，实测见过这些形态：
+ * - "epub:OEBPS/text00001.html"（带前缀且已是 zip 根路径，《策略思维》）
+ * - "chapter1.xhtml"（相对 OPF 目录，规范写法）
+ * - 中文文件名可能是 percent-encoded
+ * 所以按候选清单逐个试，找不到就放弃这章。
+ */
+export function findEntry(
+  files: Record<string, Uint8Array>,
+  opfDir: string,
+  href: string,
+): Uint8Array | undefined {
+  const name = resolveZipPath(files, opfDir, href)
+  return name ? files[name] : undefined
 }
 
 /**

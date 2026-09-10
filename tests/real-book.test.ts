@@ -10,6 +10,7 @@ import { unzipSync } from 'fflate'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { normalizeTitle, openEpub, type OpenedBook } from '../src/lib/epub'
 import { prepareChapterHtml } from '../src/lib/sanitize'
+import { findOpfPath, resolveZipPath } from '../src/lib/weights'
 
 /** 直接从 epub（本质是 zip）里按路径后缀读出某个条目的字节，用来校验封面取对了没 */
 function readZipEntry(epubPath: string, suffix: string): Uint8Array | undefined {
@@ -96,13 +97,38 @@ describe.skipIf(!hasRealBook)('真实样本《涛动周期论》', () => {
     expect(prepared).not.toMatch(/font-family/)
   })
 
-  it('含图章节的图片 src 被换成可加载地址，而不是原始相对路径', async () => {
+  it('含图章节的图片全部换成可加载地址，且内容与 zip 原图逐字节一致', async () => {
+    // 这一条守的是"正文图片一张都显示不出来"那个 P0：
+    // 解析库给的 blob URL 会被 destroy() 全局 revoke，真浏览器里全是 0 字节空图。
+    // 所以我们自己从 zip 解字节（Node 端退化成 data URL，可以逐字节校验）。
     const target = book.chapters.find((c) => c.id === 'Chapter4_1') ?? book.chapters[1]
     const { html } = await book.loadChapter(target.id)
     const srcs = [...html.matchAll(/<img[^>]+src="([^"]+)"/gi)].map((m) => m[1])
     expect(srcs.length).toBeGreaterThan(0)
-    // 原始 EPUB 里是相对路径（如 EPUB/images/xxx.jpg），库必须已换成绝对地址
-    for (const src of srcs) expect(src.startsWith('EPUB/')).toBe(false)
+
+    // 一张都不许留相对路径（那样必然 404），也不许是解析库的 blob
+    for (const src of srcs) expect(src).toMatch(/^data:image\//)
+
+    // 逐字节比对：拿原章节 html 里的第一张图，确认输出里存在与之完全相同的字节
+    const files = unzipSync(new Uint8Array(readFileSync(realBook)))
+    const opfPath = findOpfPath(files)
+    expect(opfPath).toBeTruthy()
+    const chapterName = Object.keys(files).find((n) => /Chapter4_1/.test(n))
+    expect(chapterName).toBeTruthy()
+    const rawHtml = new TextDecoder().decode(files[chapterName!])
+    const firstSrc = rawHtml.match(/<img[^>]+src="([^"]+)"/i)?.[1]
+    expect(firstSrc).toBeTruthy()
+    const originPath = resolveZipPath(files, chapterName!.slice(0, chapterName!.lastIndexOf('/')), firstSrc!)
+    expect(originPath).toBeTruthy()
+    const originBytes = files[originPath!]
+    expect(originBytes.byteLength).toBeGreaterThan(1000)
+
+    const decoded = srcs
+      .map((s) => s.split(',')[1])
+      .filter((b64): b64 is string => !!b64)
+      .map((b64) => Uint8Array.from(atob(b64), (ch) => ch.charCodeAt(0)))
+    expect(decoded.some((bytes) => bytes.length === originBytes.length &&
+      bytes.every((b, i) => b === originBytes[i]))).toBe(true)
   })
 })
 

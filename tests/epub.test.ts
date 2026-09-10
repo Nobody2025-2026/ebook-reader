@@ -32,10 +32,20 @@ describe('openEpub', () => {
     expect(book.chapters.map((c) => c.label)).toEqual(['第一章 开场', '第二章 收尾'])
   })
 
-  it('加载章节正文与样式', async () => {
+  it('加载章节正文，并把外链 CSS 就地内联成可靠地址', async () => {
     const first = await book.loadChapter(book.chapters[0].id)
     expect(first.html).toContain('这是第一章的正文')
-    expect(first.css.length).toBeGreaterThan(0)
+    // CSS 由我们自己从 zip 解出并内联（Node 端没有 createObjectURL，退化成 data URL），
+    // 不再依赖解析库那套会被 destroy() 清空的全局 blob 缓存
+    const inlined = first.html.match(/<link[^>]+href="(data:text\/css;base64,[^"]+)"/i)
+    expect(inlined).toBeTruthy()
+    const css = Buffer.from(inlined![1].split(',')[1], 'base64').toString('utf8')
+    expect(css).toContain('line-height:1.8')
+  })
+
+  it('章节正文里的 XML 声明与 DOCTYPE 已剥掉（否则 innerHTML 会当文本显示）', async () => {
+    const first = await book.loadChapter(book.chapters[0].id)
+    expect(first.html.startsWith('<html')).toBe(true)
   })
 
   it('算出每章的纯文字权重', () => {
