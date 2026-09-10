@@ -170,6 +170,56 @@ export function unwrapAll(article: HTMLElement): void {
   }
 }
 
+/**
+ * 把同一块内的高亮区间合并成互不重叠的连续段。
+ * 抽出来是为了让 applyHighlights（画）和 countSegments（数）用同一套口径。
+ */
+function mergeSegments(
+  list: { id: string; startOffset: number; endOffset: number; color?: string }[],
+  total: number,
+): { start: number; end: number; ids: string[]; color?: string }[] {
+  const sorted = [...list].sort((x, y) => x.startOffset - y.startOffset)
+  const out: { start: number; end: number; ids: string[]; color?: string }[] = []
+  for (const ann of sorted) {
+    const s = Math.max(0, Math.min(ann.startOffset, total))
+    const e = Math.max(0, Math.min(ann.endOffset, total))
+    if (e <= s) continue
+    const last = out[out.length - 1]
+    if (last && s <= last.end) {
+      last.end = Math.max(last.end, e)
+      last.ids.push(ann.id)
+    } else {
+      out.push({ start: s, end: e, ids: [ann.id], color: ann.color })
+    }
+  }
+  return out
+}
+
+/**
+ * 这一章**理应**有多少个 <mark>。
+ * 用于"高亮守卫"：滚动会触发 React 重渲染，章节 DOM 可能被整体重置，
+ * 把画好的 <mark> 冲掉。每次渲染后比对"应有段数 vs 实际 mark 数"，
+ * 对不上就补画一次，高亮才不会滚着滚着就没了。
+ */
+export function countSegments(
+  article: HTMLElement,
+  anns: { id: string; blockIndex: number; startOffset: number; endOffset: number }[],
+): number {
+  const blocks = Array.from(article.querySelectorAll(BLOCK_SELECTOR)) as HTMLElement[]
+  const byBlock = new Map<number, typeof anns>()
+  for (const a of anns) {
+    if (!byBlock.has(a.blockIndex)) byBlock.set(a.blockIndex, [])
+    byBlock.get(a.blockIndex)!.push(a)
+  }
+  let n = 0
+  for (const [blockIndex, list] of byBlock) {
+    const block = blocks[blockIndex]
+    if (!block) continue
+    n += mergeSegments(list, blockTextLength(block)).length
+  }
+  return n
+}
+
 /** 对一章重绘所有高亮（先清除再包裹，幂等） */
 export function applyHighlights(
   article: HTMLElement,
@@ -187,26 +237,13 @@ export function applyHighlights(
     if (!block) continue
     try {
       const total = blockTextLength(block)
-      const sorted = [...list].sort((x, y) => x.startOffset - y.startOffset)
       //
       // 重叠区间**合并**而不是丢弃。
       // 早期版本用「跳过与前面重叠的」保护嵌套，结果是：先选一小段、再选一大段把它包住时，
       // 大段先画、小段因起点落在已覆盖区内被丢弃 → 用户看到"之前的高亮消失了"。
       // 合并成一段连续 <mark> 后，视觉上稳定，被合并的 id 记在 data-ann-ids 上，
       // 导出/删除仍按原始多条处理（数据一条不少）。
-      const merged: { start: number; end: number; ids: string[]; color?: string }[] = []
-      for (const ann of sorted) {
-        const s = Math.max(0, Math.min(ann.startOffset, total))
-        const e = Math.max(0, Math.min(ann.endOffset, total))
-        if (e <= s) continue
-        const last = merged[merged.length - 1]
-        if (last && s <= last.end) {
-          last.end = Math.max(last.end, e)
-          last.ids.push(ann.id)
-        } else {
-          merged.push({ start: s, end: e, ids: [ann.id], color: ann.color })
-        }
-      }
+      const merged = mergeSegments(list, total)
       for (const seg of merged) {
         // 单段失败不能影响其他段（见 wrapRange 里的说明）
         try {

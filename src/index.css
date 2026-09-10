@@ -816,11 +816,24 @@ body {
   background: var(--bg);
 }
 
+/* 条目主体是个按钮：点它跳到书中这一处 */
 .export-item__body {
   display: flex;
+  flex: 1;
   flex-direction: column;
   gap: 4px;
   min-width: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.export-item__body:hover .export-item__text {
+  color: var(--accent);
 }
 
 .export-item__text {

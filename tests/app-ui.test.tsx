@@ -465,6 +465,79 @@ describe('阅读器', () => {
     await waitFor(() => expect(container.querySelector('mark.hl')).toBeNull())
   })
 
+  // 回归点：滚动会 setPercent → React 重渲染 → 章节 innerHTML 被重写，
+  // 画好的 <mark> 被整段冲掉，而依赖 [loaded, annotations] 的 effect 不会重跑
+  // → 高亮"一滚就没"，直到下次增删高亮才又出现。
+  it('反复滚动（触发重渲染）后高亮依然在', async () => {
+    await saveBook(meta, new File(['a'], 'book.epub'))
+    const SH = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollHeight')
+    const CH = Object.getOwnPropertyDescriptor(Element.prototype, 'clientHeight')
+    Object.defineProperty(Element.prototype, 'scrollHeight', {
+      configurable: true,
+      get: () => 10000,
+    })
+    Object.defineProperty(Element.prototype, 'clientHeight', {
+      configurable: true,
+      get: () => 600,
+    })
+    try {
+      const { container } = render(<Reader bookId="b1" onExit={vi.fn()} />)
+      await waitFor(() => expect(screen.getByText('c1 的正文')).toBeInTheDocument())
+
+      const p = container.querySelector('article[data-chapter-index="0"] p') as HTMLElement
+      const textNode = p.firstChild as Text
+      const range = document.createRange()
+      range.setStart(textNode, 0)
+      range.setEnd(textNode, 2)
+      const sel = window.getSelection()!
+      sel.removeAllRanges()
+      sel.addRange(range)
+      fireEvent.mouseUp(container.querySelector('.reader-scroll') as HTMLElement)
+      await waitFor(() => expect(screen.getByText('加高亮')).toBeInTheDocument())
+      fireEvent.click(screen.getByText('加高亮'))
+      await waitFor(() => expect(container.querySelector('mark.hl')).toBeTruthy())
+
+      const scroller = container.querySelector('.reader-scroll') as HTMLElement
+      for (let i = 0; i < 3; i++) {
+        scroller.scrollTop = 500 + i * 300
+        fireEvent.scroll(scroller)
+        await waitFor(() => expect(container.querySelector('mark.hl')).toBeTruthy())
+      }
+    } finally {
+      if (SH) Object.defineProperty(Element.prototype, 'scrollHeight', SH)
+      else Reflect.deleteProperty(Element.prototype, 'scrollHeight')
+      if (CH) Object.defineProperty(Element.prototype, 'clientHeight', CH)
+      else Reflect.deleteProperty(Element.prototype, 'clientHeight')
+    }
+  })
+
+  it('点笔记条目会关掉管理面板并跳到正文', async () => {
+    await saveBook(meta, new File(['a'], 'book.epub'))
+    const { container } = render(<Reader bookId="b1" onExit={vi.fn()} />)
+    await waitFor(() => expect(screen.getByText('c1 的正文')).toBeInTheDocument())
+
+    const p = container.querySelector('article[data-chapter-index="0"] p') as HTMLElement
+    const textNode = p.firstChild as Text
+    const range = document.createRange()
+    range.setStart(textNode, 0)
+    range.setEnd(textNode, 2)
+    const sel = window.getSelection()!
+    sel.removeAllRanges()
+    sel.addRange(range)
+    fireEvent.mouseUp(container.querySelector('.reader-scroll') as HTMLElement)
+    await waitFor(() => expect(screen.getByText('加高亮')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('加高亮'))
+    await waitFor(async () => expect(await listAnnotations('b1')).toHaveLength(1))
+
+    fireEvent.click(screen.getByRole('button', { name: /^笔记/ }))
+    await waitFor(() => expect(screen.getByText('高亮与笔记管理')).toBeInTheDocument())
+
+    // 点条目正文 → 关闭面板（并异步滚到对应段落）
+    fireEvent.click(container.querySelector('.export-item__body') as HTMLElement)
+    await waitFor(() => expect(screen.queryByText('高亮与笔记管理')).toBeNull())
+    expect(container.querySelector('mark.hl')).toBeTruthy()
+  })
+
   // ↓↓ P1：单书全文搜索 —— 打开搜索面板、输入关键词返回命中并可跳转
   it('搜索本书返回命中结果', async () => {
     await saveBook(meta, new File(['a'], 'book.epub'))

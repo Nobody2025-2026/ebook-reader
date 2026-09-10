@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import { openEpub, type ChapterRef, type OpenedBook, type TocEntry } from '../lib/epub'
 import {
   computeWeightedPercent,
@@ -44,7 +44,12 @@ import {
   registerCustomFonts,
   removeCustomFont,
 } from '../lib/customFont'
-import { applyHighlights, selectionToAnchor, type BlockAnchor } from '../lib/highlight'
+import {
+  applyHighlights,
+  countSegments,
+  selectionToAnchor,
+  type BlockAnchor,
+} from '../lib/highlight'
 import { extractBookTexts, searchChapters, type SearchHit } from '../lib/search'
 
 // 块级元素选择器：覆盖小说/学术书里绝大多数情况。
@@ -138,6 +143,9 @@ export function Reader({ bookId, onExit }: Props) {
   const hasRestoredRef = useRef(false)
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const latestProgress = useRef<ReadingProgress | null>(null)
+  // 高亮重绘函数的"最新引用"。跳转这类异步回调要拿到最新的闭包，
+  // 直接捕获 useCallback 的旧值会用到过期的 annotations。
+  const repaintHighlightsRef = useRef<(() => void) | null>(null)
 
   /** @returns 这一章是否真的被加载了（重复请求 / 失败都返回 false） */
   const loadChapter = useCallback(async (index: number): Promise<boolean> => {
@@ -720,6 +728,35 @@ export function Reader({ bookId, onExit }: Props) {
     [bookId],
   )
 
+  /**
+   * 从管理面板跳到某条高亮所在的正文位置。
+   * 章节没加载过就先加载（和书签跳转同一套节奏），加载完成后补一次高亮重绘，
+   * 保证跳过去就能看到那一段是黄的（懒加载图片会把布局顶动，所以重试几次）。
+   */
+  const goToAnnotation = useCallback(
+    async (ann: Annotation) => {
+      setExportOpen(false)
+      setSearchOpen(false)
+      if (!loadedIdxRef.current.has(ann.chapterIndex)) {
+        await loadChapter(ann.chapterIndex)
+      }
+      const tries = [0, 80, 250, 700, 1800]
+      tries.forEach((delay) =>
+        setTimeout(() => {
+          const chapterEl = nodesRef.current.get(ann.chapterIndex)
+          const block = chapterEl?.querySelectorAll(BLOCK_SELECTOR)[ann.blockIndex] as
+            | HTMLElement
+            | undefined
+          if (block && typeof block.scrollIntoView === 'function') {
+            block.scrollIntoView({ block: 'center', behavior: 'auto' })
+          }
+          repaintHighlightsRef.current?.()
+        }, delay),
+      )
+    },
+    [loadChapter],
+  )
+
   /** 删除当前浮层对应的高亮 */
   const deleteActive = useCallback(async () => {
     if (!activeAnn || !activeAnn.id) return
@@ -873,18 +910,33 @@ export function Reader({ bookId, onExit }: Props) {
     void pump()
   }, [loaded, pump])
 
-  // 章节进 DOM 后重绘高亮（幂等：先拆旧 <mark> 再按锚点重新包裹）。
-  // 依赖 loaded 与 annotations：新章节加载、或增删高亮时都重画。
-  useEffect(() => {
+  //
+  // 重绘高亮（幂等：先拆旧 <mark> 再按锚点重新包裹）。
+  // **带脏检查**：先数一数这一章"理应"有多少个 <mark>（countSegments），
+  // 跟实际数量一致就什么都不做，只有对不上才重画。
+  const repaintHighlights = useCallback(() => {
     for (const ch of loaded) {
       const article = nodesRef.current.get(ch.index)
       if (!article) continue
-      applyHighlights(
-        article,
-        annotations.filter((a) => a.chapterIndex === ch.index),
-      )
+      const anns = annotations.filter((a) => a.chapterIndex === ch.index)
+      if (article.querySelectorAll('mark.hl').length === countSegments(article, anns)) continue
+      applyHighlights(article, anns)
     }
   }, [loaded, annotations])
+
+  //
+  // ⚠️ 这个 effect **故意不写依赖数组**——每次 React 渲染后都要守一次。
+  // 原因（"一滚动高亮就没了"的真因）：滚动会 setPercent 触发重渲染，
+  // 章节内容是用 dangerouslySetInnerHTML 灌进去的，React 重渲染时会把
+  // innerHTML 重新设一遍，我们画的 <mark> 就被整段冲掉了；
+  // 而依赖 [loaded, annotations] 的 effect 此时根本不会重跑（两个依赖都没变），
+  // 于是高亮消失、且再也回不来——直到下次增删高亮才被重新画出来
+  // （正是用户说的"再创建一次，之前的又出现了"）。
+  // 每次渲染后比对数量、缺了就补画，才能扛住任意次数的重渲染。
+  useEffect(() => {
+    repaintHighlightsRef.current = repaintHighlights
+    repaintHighlights()
+  })
 
   // 点浮层外面就关掉笔记浮层。
   // 之前只有浮层里的"关闭"按钮能关，点正文其他地方浮层会一直挂着，
@@ -1058,10 +1110,10 @@ export function Reader({ bookId, onExit }: Props) {
                 else nodesRef.current.delete(chapter.index)
               }}
             >
-              {chapter.css.map((sheet) => (
-                <link key={sheet.id} rel="stylesheet" href={sheet.href} />
-              ))}
-              <div dangerouslySetInnerHTML={{ __html: chapter.html }} />
+              {/* memo 化：html/css 引用不变时 React 不会碰这个子树，
+                  避免父组件（滚动更新进度）一重渲染就把整章 innerHTML 重写一遍、
+                  把画好的高亮冲掉。 */}
+              <ChapterBody html={chapter.html} css={chapter.css} />
             </article>
           ))}
         </div>
@@ -1377,7 +1429,12 @@ export function Reader({ bookId, onExit }: Props) {
                       }
                       aria-label="选择这条高亮"
                     />
-                    <span className="export-item__body">
+                    {/* 点条目正文 = 跳到书中这一处（章节没加载会自动加载） */}
+                    <button
+                      className="export-item__body"
+                      onClick={() => void goToAnnotation(a)}
+                      title="跳到书中这一处"
+                    >
                       <span className="search-item__chapter">第 {a.chapterIndex + 1} 章</span>
                       <span className="export-item__text">
                         {a.text.length > 40 ? `${a.text.slice(0, 40)}…` : a.text}
@@ -1385,7 +1442,7 @@ export function Reader({ bookId, onExit }: Props) {
                       {a.note?.trim() ? (
                         <span className="export-item__note">📝 {a.note}</span>
                       ) : null}
-                    </span>
+                    </button>
                     {/* 管理面板直接删：以前只能导出，想删得回正文里点高亮再删 */}
                     <button
                       className="export-del"
@@ -1473,6 +1530,36 @@ export function Reader({ bookId, onExit }: Props) {
     </div>
   )
 }
+
+export interface ChapterCss {
+  id: string
+  href: string
+}
+
+/**
+ * 章节正文（memo 化）。
+ *
+ * 为什么必须 memo：章节 HTML 是 dangerouslySetInnerHTML 灌进去的，父组件每次
+ * 重渲染（滚动更新进度就会）都可能把这段 innerHTML 重设一遍，我们画在上面的
+ * <mark> 高亮就被整段冲掉。给 html / css 加引用稳定性后，React 会跳过这个子树，
+ * DOM 不再被重写 —— 这是"一滚动高亮就没了"的根治手段（守卫重绘是兜底）。
+ */
+const ChapterBody = memo(function ChapterBody({
+  html,
+  css,
+}: {
+  html: string
+  css: ChapterCss[]
+}) {
+  return (
+    <>
+      {css.map((sheet) => (
+        <link key={sheet.id} rel="stylesheet" href={sheet.href} />
+      ))}
+      <div dangerouslySetInnerHTML={{ __html: html }} />
+    </>
+  )
+})
 
 /** 递归渲染目录条目 */
 function TocNode({
