@@ -44,6 +44,10 @@
 - 新增第二本真实样本《博弈与社会》进入回归测试，专门守住"封面走 OPF meta 声明"这条路。
 - 新增 `tests/settings.test.ts`（字体栈解析 + 归一化迁移，10 例）、`tests/customFont.test.ts`（字体增删查 + FontFace 注册，5 例）。
 
+### 文档
+
+- 新增 `docs/字体验证清单.md`：自定义字体功能的跨平台 / 多格式验证矩阵（Mac + Windows × ttf/otf/woff/woff2），已验证项打勾、未验证留空，供主上大人有条件时逐步回填；含通用通过标准与各形态（Mac Web / Mac 桌面 / Windows Web / Windows 桌面）的验证步骤。
+
 ## [0.1.1]
 
 - 重新设计并替换 macOS 应用图标。
