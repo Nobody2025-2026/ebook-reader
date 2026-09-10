@@ -21,6 +21,7 @@ const KEY_META = 'meta:'
 const KEY_FILE = 'file:'
 const KEY_PROGRESS = 'progress:'
 const KEY_BOOKMARKS = 'bookmarks:'
+const KEY_STATS = 'stats:'
 
 /**
  * 书文件以 ArrayBuffer 形式存，不存 Blob。
@@ -125,10 +126,82 @@ export async function updateBookCover(
   await set(KEY_META + id, { ...meta, cover, coverVersion: version })
 }
 
-/** 删书必须连带删进度和书签，否则会留下孤儿记录 */
+/** 删书必须连带删进度、书签和阅读统计，否则会留下孤儿记录 */
 export async function deleteBook(id: string): Promise<void> {
   await del(KEY_META + id)
   await del(KEY_FILE + id)
   await del(KEY_PROGRESS + id)
   await del(KEY_BOOKMARKS + id)
+  await del(KEY_STATS + id)
+}
+
+// ---- 阅读时长统计（P1）----
+
+export interface ReadingStats {
+  bookId: string
+  /** 累计阅读秒数（仅前景阅读计时，切后台/息屏不计） */
+  totalSeconds: number
+  /** 打开书的次数（每次进入阅读页记一次） */
+  sessions: number
+  firstOpenedAt: number
+  lastReadAt: number
+  finishedAt?: number
+}
+
+export async function getStats(id: string): Promise<ReadingStats | undefined> {
+  return get<ReadingStats>(KEY_STATS + id)
+}
+
+export async function listStats(): Promise<Record<string, ReadingStats>> {
+  const allKeys = await keys()
+  const statKeys = allKeys.filter(
+    (k): k is string => typeof k === 'string' && k.startsWith(KEY_STATS),
+  )
+  const result: Record<string, ReadingStats> = {}
+  await Promise.all(
+    statKeys.map(async (k) => {
+      const s = await get<ReadingStats>(k)
+      if (s) result[k.slice(KEY_STATS.length)] = s
+    }),
+  )
+  return result
+}
+
+/** 进入阅读页时调用一次：记一次阅读会话（首次打开初始化记录） */
+export async function touchOpen(id: string): Promise<void> {
+  const now = Date.now()
+  const existing = await get<ReadingStats>(KEY_STATS + id)
+  if (existing) {
+    await set(KEY_STATS + id, { ...existing, sessions: existing.sessions + 1, lastReadAt: now })
+    return
+  }
+  await set(KEY_STATS + id, {
+    bookId: id,
+    totalSeconds: 0,
+    sessions: 1,
+    firstOpenedAt: now,
+    lastReadAt: now,
+  })
+}
+
+/** 累加阅读时长（秒）；仅在前景阅读时调用，切后台不计 */
+export async function addReadingSeconds(id: string, secs: number): Promise<void> {
+  if (secs <= 0) return
+  const now = Date.now()
+  const existing = await get<ReadingStats>(KEY_STATS + id)
+  if (existing) {
+    await set(KEY_STATS + id, {
+      ...existing,
+      totalSeconds: existing.totalSeconds + secs,
+      lastReadAt: now,
+    })
+    return
+  }
+  await set(KEY_STATS + id, {
+    bookId: id,
+    totalSeconds: secs,
+    sessions: 0,
+    firstOpenedAt: now,
+    lastReadAt: now,
+  })
 }

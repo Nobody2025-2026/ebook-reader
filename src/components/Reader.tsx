@@ -17,6 +17,8 @@ import {
   listBookmarks,
   removeBookmark,
   saveProgress,
+  addReadingSeconds,
+  touchOpen,
 } from '../lib/storage'
 import { makeExcerpt, newBookmarkId, type Bookmark } from '../lib/bookmark'
 import {
@@ -230,7 +232,10 @@ export function Reader({ bookId, onExit }: Props) {
         } else if (start > 0 && !loadedIdxRef.current.has(0)) {
           await loadChapter(0)
         }
-        if (!cancelled) setStatus('ready')
+        if (!cancelled) {
+          setStatus('ready')
+          void touchOpen(bookId)
+        }
       } catch (err) {
         if (!cancelled) {
           setError(err instanceof Error ? err.message : String(err))
@@ -301,6 +306,39 @@ export function Reader({ bookId, onExit }: Props) {
     if (!latestProgress.current) return
     void saveProgress(bookId, latestProgress.current)
   }, [bookId])
+
+  // 阅读时长统计（P1）：书进入 ready 后开始计时；切到后台/息屏暂停（不计），
+  // 周期（30s）与卸载/退出时把已读时长持久化；切回前台/重新 ready 恢复计时。
+  // 注意：记「会话数」由打开书流程里的 touchOpen 负责，这里只管计时与持久化，
+  // 避免 status 在 loading↔ready 间反复变化导致重复计数。
+  const readingStartRef = useRef<number | null>(null)
+  useEffect(() => {
+    if (status !== 'ready') return
+    const flushReading = () => {
+      if (readingStartRef.current == null) return
+      const secs = Math.floor((Date.now() - readingStartRef.current) / 1000)
+      if (secs > 0) {
+        void addReadingSeconds(bookId, secs)
+        readingStartRef.current = Date.now()
+      }
+    }
+    const onVisibility = () => {
+      if (document.hidden) {
+        flushReading()
+        readingStartRef.current = null
+      } else {
+        readingStartRef.current = Date.now()
+      }
+    }
+    readingStartRef.current = Date.now()
+    const timer = setInterval(flushReading, 30_000)
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => {
+      clearInterval(timer)
+      document.removeEventListener('visibilitychange', onVisibility)
+      flushReading()
+    }
+  }, [status, bookId])
 
   const handleScroll = useCallback(() => {
     const container = containerRef.current

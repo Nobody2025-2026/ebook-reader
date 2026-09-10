@@ -2,10 +2,19 @@ import { useState } from 'react'
 import { webBookSource } from '../lib/bookSource'
 import { isValidCoverDataUrl } from '../lib/cover'
 import type { ReadingProgress } from '../lib/progress'
-import type { BookMeta } from '../lib/storage'
+import type { BookMeta, ReadingStats } from '../lib/storage'
 
 export interface LibraryBook extends BookMeta {
   progress?: ReadingProgress
+  stats?: ReadingStats
+}
+
+function formatReadingTime(totalSeconds: number): string {
+  const h = Math.floor(totalSeconds / 3600)
+  const m = Math.floor((totalSeconds % 3600) / 60)
+  if (h > 0) return `已读 ${h} 小时 ${m} 分`
+  if (m > 0) return `已读 ${m} 分`
+  return `已读 ${totalSeconds} 秒`
 }
 
 interface Props {
@@ -99,6 +108,11 @@ export function Library({ books, importing, importHint, onImport, onOpen, onRest
                         </button>
                       )}
                     </div>
+                    {book.stats && book.stats.totalSeconds > 0 && (
+                      <div className="book-stats">
+                        {formatReadingTime(book.stats.totalSeconds)} · 读了 {book.stats.sessions} 次
+                      </div>
+                    )}
                   </div>
                 </div>
                 <button className="book-delete" onClick={() => onDelete(book.id)} title="从书架移除">

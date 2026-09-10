@@ -10,6 +10,7 @@ import {
   getBookFile,
   listBooks,
   listProgress,
+  listStats,
   saveBook,
   updateBookCover,
 } from './lib/storage'
@@ -76,9 +77,9 @@ export default function App() {
   }, [])
 
   const refresh = useCallback(async () => {
-    const [metas, progress] = await Promise.all([listBooks(), listProgress()])
+    const [metas, progress, stats] = await Promise.all([listBooks(), listProgress(), listStats()])
     if (!mountedRef.current) return
-    setBooks(metas.map((meta) => ({ ...meta, progress: progress[meta.id] })))
+    setBooks(metas.map((meta) => ({ ...meta, progress: progress[meta.id], stats: stats[meta.id] })))
     // 后台补封面：补完一本刷新一次书架，让封面逐个出现，不阻塞首屏
     void backfillMissingCovers(metas, () => {
       if (mountedRef.current) void refresh()

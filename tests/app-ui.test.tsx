@@ -13,6 +13,7 @@ import {
   deleteBook,
   getBookFile,
   getProgress,
+  getStats,
   listBookmarks,
   listBooks,
   removeBookmark,
@@ -162,6 +163,19 @@ describe('存储层', () => {
     await clearProgress('b1')
     expect(await getProgress('b1')).toBeUndefined()
     expect(await getBookFile('b1', 'book.epub')).toBeTruthy()
+  })
+})
+
+describe('阅读时长统计（集成）', () => {
+  it('打开书进入阅读页会记录一次阅读会话', async () => {
+    await saveBook(meta, new File(['x'], 'book.epub'))
+    render(<Reader bookId="b1" onExit={vi.fn()} />)
+    // 进入 ready 后正文渲染出来，此时 touchOpen 应已记入一次会话
+    await waitFor(() => expect(screen.getByText('c1 的正文')).toBeInTheDocument())
+    await waitFor(async () => {
+      const s = await getStats('b1')
+      expect(s?.sessions).toBe(1)
+    })
   })
 })
 
