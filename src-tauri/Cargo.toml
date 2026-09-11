@@ -1,6 +1,6 @@
 [package]
 name = "ebook-reader"
-version = "0.1.3"
+version = "0.1.4"
 description = "A local EPUB reader"
 authors = ["shaun"]
 edition = "2021"
