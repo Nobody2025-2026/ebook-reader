@@ -1252,7 +1252,8 @@ body {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 2px 0;
+  /* 手机上的触控区：光靠 12px 文字只有 24px 高，太难点，上下各留 8px */
+  padding: 8px 0;
   color: var(--muted);
 }
 
