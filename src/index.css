@@ -238,6 +238,111 @@ body {
   color: var(--danger);
 }
 
+/* ---------- 移除确认框 / 可撤销提示 ----------
+   一个误触曾会直接抹掉书+进度+书签+笔记+统计，所以删除改为两步：
+   先确认，再给 8 秒撤销窗口。 */
+.btn-danger {
+  border-color: var(--danger);
+  background: var(--danger);
+  color: #fff;
+}
+
+.btn-danger:hover:not(:disabled) {
+  border-color: #8f2626;
+  background: #8f2626;
+  color: #fff;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+
+.confirm-dialog {
+  width: 100%;
+  max-width: 400px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.28);
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.confirm-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 500;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.confirm-body {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--muted);
+}
+
+.confirm-body strong {
+  color: var(--fg);
+  font-weight: 500;
+}
+
+.confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.shelf-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 28px;
+  transform: translateX(-50%);
+  z-index: 85;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  max-width: calc(100vw - 32px);
+  padding: 10px 12px 10px 18px;
+  border-radius: 10px;
+  background: var(--fg);
+  color: var(--surface);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.2);
+  font-size: 14px;
+}
+
+.shelf-toast > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shelf-toast__undo {
+  flex: none;
+  border: none;
+  background: transparent;
+  color: #afa9ec;
+  font-size: 14px;
+  font-weight: 500;
+  padding: 2px 4px;
+  cursor: pointer;
+}
+
+.shelf-toast__undo:hover {
+  text-decoration: underline;
+}
+
 /* ---------- 阅读器 ---------- */
 .reader {
   height: 100vh;

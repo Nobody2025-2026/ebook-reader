@@ -1,10 +1,10 @@
 // 存储层 + 组件的集成测试（jsdom + fake-indexeddb）。
 // 解析层在这里被 mock 掉——它已经在 real-book.test.ts 里用真书验过了，
 // 这里只关心"书存得进、读得出、进度记得住"。
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { clear } from 'idb-keyval'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { Library } from '../src/components/Library'
+import { Library, UNDO_DELETE_MS } from '../src/components/Library'
 import { Reader } from '../src/components/Reader'
 import { webBookSource } from '../src/lib/bookSource'
 import {
@@ -208,7 +208,7 @@ describe('书库页', () => {
   it('点封面打开对应的书', () => {
     const onOpen = vi.fn()
     render(<Library books={[meta]} importing={false} importHint="" onImport={vi.fn()} onOpen={onOpen} onRestart={vi.fn()} onDelete={vi.fn()} />)
-    fireEvent.click(screen.getByRole('button', { name: /测试书/ }))
+    fireEvent.click(screen.getByRole('button', { name: '打开《测试书》' }))
     expect(onOpen).toHaveBeenCalledWith('b1')
   })
 
@@ -227,6 +227,113 @@ describe('书库页', () => {
     )
     fireEvent.click(screen.getByRole('button', { name: '从头读' }))
     expect(onRestart).toHaveBeenCalledWith('b1')
+  })
+})
+
+// 曾经点一下 × 就直删：书 + 进度 + 书签 + 全部笔记 + 统计一次性蒸发，无确认、无撤销。
+// 现在两步：先确认框，再给 8 秒撤销窗口（窗口内 IndexedDB 压根没写，撤销只是取消计时器）。
+describe('书库：移除书籍有确认、且可撤销', () => {
+  const renderLibrary = (onDelete = vi.fn()) => {
+    const utils = render(
+      <Library
+        books={[meta]}
+        importing={false}
+        importHint=""
+        onImport={vi.fn()}
+        onOpen={vi.fn()}
+        onRestart={vi.fn()}
+        onDelete={onDelete}
+      />,
+    )
+    return { ...utils, onDelete }
+  }
+
+  /** 点 × → 弹确认框 → 点「移除」 */
+  const confirmRemove = () => {
+    fireEvent.click(screen.getByRole('button', { name: '移除《测试书》' }))
+    fireEvent.click(screen.getByRole('button', { name: '移除' }))
+  }
+
+  // 只伪造 setTimeout/clearTimeout：把 MessageChannel / rAF 也伪掉会让 React 调度卡住
+  const useUndoTimers = () => vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+
+  it('点 × 只弹确认框，不再一键直删', () => {
+    const { onDelete } = renderLibrary()
+    fireEvent.click(screen.getByRole('button', { name: '移除《测试书》' }))
+    expect(screen.getByRole('alertdialog')).toBeInTheDocument()
+    expect(screen.getByText('移除《测试书》？')).toBeInTheDocument()
+    expect(onDelete).not.toHaveBeenCalled()
+  })
+
+  it('点「取消」或按 Esc 都只是关掉弹窗，书还在', () => {
+    const { onDelete } = renderLibrary()
+
+    fireEvent.click(screen.getByRole('button', { name: '移除《测试书》' }))
+    fireEvent.click(screen.getByRole('button', { name: '取消' }))
+    expect(screen.queryByRole('alertdialog')).toBeNull()
+    expect(screen.getByText('测试书')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '移除《测试书》' }))
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(screen.queryByRole('alertdialog')).toBeNull()
+    expect(screen.getByText('测试书')).toBeInTheDocument()
+    expect(onDelete).not.toHaveBeenCalled()
+  })
+
+  it('确认后书立刻从书架消失，但还没落库；点「撤销」书回来', () => {
+    useUndoTimers()
+    try {
+      const { onDelete } = renderLibrary()
+      confirmRemove()
+
+      expect(screen.queryByText('测试书')).toBeNull()
+      expect(screen.getByText('已移除《测试书》')).toBeInTheDocument()
+      expect(onDelete).not.toHaveBeenCalled()
+
+      fireEvent.click(screen.getByRole('button', { name: '撤销' }))
+      expect(screen.getByText('测试书')).toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: '撤销' })).toBeNull()
+
+      // 撤销之后即使把窗口走完，也不该再删
+      act(() => {
+        vi.advanceTimersByTime(UNDO_DELETE_MS * 2)
+      })
+      expect(onDelete).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('撤销窗口过期后，才真正把删除落库', () => {
+    useUndoTimers()
+    try {
+      const { onDelete } = renderLibrary()
+      confirmRemove()
+      expect(onDelete).not.toHaveBeenCalled()
+
+      act(() => {
+        vi.advanceTimersByTime(UNDO_DELETE_MS)
+      })
+      expect(onDelete).toHaveBeenCalledWith('b1')
+      expect(screen.queryByText('已移除《测试书》')).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('撤销窗口内离开书库（组件卸载）会立刻补齐删除', () => {
+    useUndoTimers()
+    try {
+      const { onDelete, unmount } = renderLibrary()
+      confirmRemove()
+      expect(onDelete).not.toHaveBeenCalled()
+
+      // 否则用户"看着它删了"，下次回书库书又在那儿
+      unmount()
+      expect(onDelete).toHaveBeenCalledWith('b1')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
 
