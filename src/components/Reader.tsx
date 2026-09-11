@@ -36,6 +36,7 @@ import {
   FONT_PROBE_FAMILIES,
   fontStack,
   loadSettings,
+  PAGE_MARGIN_MAX,
   saveSettings,
   type CustomFont,
   type FontKey,
@@ -1339,18 +1340,22 @@ export function Reader({ bookId, onExit }: Props) {
 
               <div className="settings-group">
                 <div className="settings-label">
-                  <span>页边距（正文宽度）</span>
+                  <span>页边距</span>
                   <span className="settings-value">{settings.pageMargin}px</span>
                 </div>
+                {/* 语义是「左右留白」：值越大正文越窄。
+                    旧版这里是「正文最大宽度」（480–900），在手机上恒大于屏宽，
+                    滑块怎么拖正文都一样宽——现在 0–120 全程可见地生效。 */}
                 <input
                   type="range"
-                  min="480"
-                  max="900"
-                  step="20"
+                  min="0"
+                  max={PAGE_MARGIN_MAX}
+                  step="4"
                   value={settings.pageMargin}
                   aria-label="页边距"
                   onChange={(e) => updateSettings({ pageMargin: Number(e.target.value) })}
                 />
+                <p className="settings-hint">往右拖两侧留白变宽、每行字数变少</p>
               </div>
 
               <div className="settings-group">

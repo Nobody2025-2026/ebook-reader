@@ -31,16 +31,24 @@ export interface CustomFont {
 export interface ReaderSettings {
   fontSize: number // px
   lineHeight: number // 无单位倍数
-  pageMargin: number // 正文最大宽度，px
+  pageMargin: number // 正文左右留白，px（越大正文越窄）
   fontFamily: string // 内置字体 key，或 'cf:<family>'（自定义字体）
   theme: Theme
   customFonts: CustomFont[] // 用户上传的字体元数据（二进制存在独立 IDB key）
 }
 
+// 页边距的取值上限。语义见下：这是"留白"，不是"宽度"。
+export const PAGE_MARGIN_MAX = 120
+// 正文栏的最大宽度（CSS 里的 --reader-content-max 与之保持一致）。
+// 页边距在它之内继续收窄：文字宽 = min(可用宽, CONTENT_MAX) - 2 × pageMargin。
+export const CONTENT_MAX_PX = 760
+
 export const DEFAULT_SETTINGS: ReaderSettings = {
   fontSize: 18,
   lineHeight: 1.9,
-  pageMargin: 680,
+  // 默认 20px 留白：宽屏下正文 720px（与旧版默认的 680px 视觉接近），
+  // 手机上 390−40（reader-scroll 内边距）−40 = 310px，一行约 17 个汉字。
+  pageMargin: 20,
   fontFamily: 'songti',
   theme: 'day',
   customFonts: [],
@@ -112,6 +120,19 @@ function normalizeFont(v: unknown): string {
   return DEFAULT_SETTINGS.fontFamily
 }
 
+// ⚠️ pageMargin 的语义变过一次，这里必须迁移：
+// 旧版把它当「正文最大宽度」（取值 480–900，越大越宽），
+// 而它挂在 .chapter 的 max-width 上 —— 手机视口才 390px，
+// 最小值 480 就已经超出屏宽，滑块拖到底正文宽度纹丝不动（用户报「页边距无效」）。
+// 现在改成「左右留白」（0–120，越大越窄），两个值域几乎不重叠，
+// 旧值一律回落默认，否则 680 会被当成 680px 留白，正文被挤成一条线。
+// 新增取值只需略增；仍以「超过上限就回默认」为唯一判据，不引入魔法常量。
+function normalizePageMargin(v: unknown): number {
+  if (typeof v !== 'number' || !Number.isFinite(v)) return DEFAULT_SETTINGS.pageMargin
+  if (v > PAGE_MARGIN_MAX) return DEFAULT_SETTINGS.pageMargin
+  return Math.min(Math.max(0, Math.round(v)), PAGE_MARGIN_MAX)
+}
+
 export async function loadSettings(): Promise<ReaderSettings> {
   const stored = await get<Partial<ReaderSettings>>(KEY_SETTINGS)
   const merged: ReaderSettings = {
@@ -120,6 +141,7 @@ export async function loadSettings(): Promise<ReaderSettings> {
     customFonts: stored?.customFonts ?? [],
   }
   merged.fontFamily = normalizeFont(stored?.fontFamily)
+  merged.pageMargin = normalizePageMargin(stored?.pageMargin)
   return merged
 }
 

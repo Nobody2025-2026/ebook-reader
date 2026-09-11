@@ -9,8 +9,10 @@ vi.mock('idb-keyval', () => ({
 }))
 
 import {
+  CONTENT_MAX_PX,
   DEFAULT_SETTINGS,
   FONT_KEYS,
+  PAGE_MARGIN_MAX,
   customFontValue,
   fontStack,
   loadSettings,
@@ -81,5 +83,47 @@ describe('loadSettings 归一化', () => {
     mockedGet.mockResolvedValue({ fontFamily: 'cf:CustomFont-xxxx', customFonts: custom })
     const s = await loadSettings()
     expect(s.customFonts).toEqual(custom)
+  })
+})
+
+// pageMargin 的语义从「正文最大宽度」（480–900）改成了「左右留白」（0–120）。
+// 两个值域几乎不重叠，旧值必须回默认 —— 否则 680 会被当成 680px 留白，
+// 正文被挤成一条线。这也是「手机上皮边距滑块无效」那个 Bug 的收尾。
+describe('loadSettings 页边距迁移', () => {
+  it('旧语义的值（480–900，正文宽度）一律回落默认留白', async () => {
+    for (const old of [480, 680, 900]) {
+      mockedGet.mockResolvedValue({ pageMargin: old })
+      expect((await loadSettings()).pageMargin).toBe(DEFAULT_SETTINGS.pageMargin)
+    }
+  })
+
+  it('新语义范围内的值原样保留', async () => {
+    for (const v of [0, 20, 72, PAGE_MARGIN_MAX]) {
+      mockedGet.mockResolvedValue({ pageMargin: v })
+      expect((await loadSettings()).pageMargin).toBe(v)
+    }
+  })
+
+  it('越界/非法值收敛到合法区间', async () => {
+    mockedGet.mockResolvedValue({ pageMargin: -30 })
+    expect((await loadSettings()).pageMargin).toBe(0)
+    mockedGet.mockResolvedValue({ pageMargin: Number.NaN })
+    expect((await loadSettings()).pageMargin).toBe(DEFAULT_SETTINGS.pageMargin)
+    mockedGet.mockResolvedValue({ pageMargin: '80' as unknown as number })
+    expect((await loadSettings()).pageMargin).toBe(DEFAULT_SETTINGS.pageMargin)
+  })
+
+  it('旧值域与新区间没有交集（迁移判据不会误伤新值）', () => {
+    // 旧值最小 480，新值最大 120：中间留了充足的隔离带
+    expect(PAGE_MARGIN_MAX).toBeLessThan(480)
+  })
+
+  it('默认留白在常见屏宽下都留得下正文', () => {
+    // 手机上：390 − reader-scroll 左右内边距(14×2，见 ≤720px 媒体查询) − 2×留白
+    const phoneText = 390 - 14 * 2 - DEFAULT_SETTINGS.pageMargin * 2
+    expect(phoneText).toBeGreaterThan(280)
+    // 宽屏上：栏宽上限 − 2×留白
+    const desktopText = CONTENT_MAX_PX - DEFAULT_SETTINGS.pageMargin * 2
+    expect(desktopText).toBeGreaterThan(600)
   })
 })

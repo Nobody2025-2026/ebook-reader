@@ -435,9 +435,13 @@ body {
 }
 
 .chapter {
-  max-width: var(--reader-page-margin, 680px);
+  /* --reader-content-max 是"栏宽上限"（固定 760px，与 settings.ts 的 CONTENT_MAX_PX 同步），
+     --reader-page-margin 是"左右留白"（用户可调，见排版面板）。
+     两者是分开的：手机上可用宽只有 350px，栏宽上限根本轮不到它起作用，
+     真正决定每行字数的是留白——旧版把留白做成 max-width，所以窄屏上滑块完全无效。 */
+  max-width: var(--reader-content-max, 760px);
   margin: 0 auto;
-  padding: 32px 0;
+  padding: 32px var(--reader-page-margin, 20px);
   font-size: var(--reader-font-size, 18px);
   line-height: var(--reader-line-height, 1.9);
   font-family: var(--reader-font-family, Georgia, "Songti SC", serif);
@@ -490,23 +494,57 @@ body {
 }
 
 /* ---------- 阅读主题（护眼 / 夜间） ---------- */
-/* 主题变量挂在 .reader 上，内联 style 只覆盖排版数值，主题靠 class 切换配色 */
+/* 主题变量挂在 .reader 上，内联 style 只覆盖排版数值，主题靠 class 切换配色。
+   ⚠️ 每个主题都必须把「整套调色板」重绑一遍，不能只改 --reader-*：
+   右侧的目录/排版/书签/搜索面板、批注浮层、提示条用的都是 --surface/--fg/
+   --muted/--line，这些只在 :root 定义过。原先夜间模式只换了正文底色，
+   于是出现"深色正文 + 刺眼纯白侧栏"，小字号的 --muted 标签在强光反差下尤其难读。 */
 .reader {
   --reader-bg: var(--surface);
   --reader-fg: var(--fg);
   --reader-bar-bg: var(--surface);
+  /* ⚠️ 这行不能省：CSS 变量在「声明它的那个元素」上就解析定型了。
+     body 上的 color: var(--fg) 取的是 :root 的值，**不会**因为后代重新
+     定义了 --fg 而回溯。面板里没显式写 color 的元素（.settings-header、
+     各类 title/empty）只能继承到 body 那个深色 —— 夜间模式下就成了
+     深底深字（实测对比度 1.12:1，几乎看不见）。在这里落一次 color，
+     整棵阅读页子树才有正确的默认前景色。 */
+  color: var(--fg);
 }
 
 .reader.theme-sepia {
   --reader-bg: #f5ecd9;
   --reader-fg: #4a4032;
   --reader-bar-bg: #f0e6cf;
+  /* 护眼：面板比正文底色再暖一点，避免白面板在米色正文旁发青。
+     灰色比日间略深一档：米色底的亮度低于纯白，同一个灰在这里对比度更低 */
+  --bg: #f5ecd9;
+  --surface: #faf3e4;
+  --fg: #453b2e;
+  --muted: #6f6049;
+  --line: #e3d7bd;
 }
 
 .reader.theme-night {
   --reader-bg: #1a1a1e;
   --reader-fg: #b8b8c0;
   --reader-bar-bg: #232328;
+  /* 夜间：整块调色板跟着翻转。--fg/--muted 比正文的 --reader-fg 略亮，
+     因为面板上的都是 13px 小字，同样的灰在暗底上更吃亏；
+     --accent/--danger 提亮（原 #534ab7 / #a32d2d 在 #232328 上只有 2–3:1） */
+  --bg: #17171b;
+  --surface: #232328;
+  --fg: #d6d6de;
+  --muted: #9a9aa6;
+  --line: #35353d;
+  --accent: #a49cf8;
+  --danger: #e88b8b;
+}
+
+/* 选中态在暗底上用 8% 的强调色几乎看不出来，加深一点
+   （12% 时 #a49cf8 文字对底仍有 5.4:1，再加就压不住了） */
+.reader.theme-night .settings-pill.active {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
 
 .reader .reader-bar {
@@ -536,11 +574,15 @@ body {
   position: sticky;
   top: 16px;
   z-index: 5;
-  max-width: var(--reader-page-margin, 680px);
+  /* 胶囊提示：随内容收窄并居中，长文案也不越过正文两侧（原先借用
+     已废弃的 --reader-page-margin 当最大宽度，那个变量的语义已经变了）。
+     配色写死不用 --accent：夜间主题会把它提亮成浅紫，白字就压不住底了。 */
+  background: #534ab7;
+  color: #fff;
+  width: fit-content;
+  max-width: calc(100% - 32px);
   margin: 0 auto;
   padding: 8px 16px;
-  background: var(--accent);
-  color: #fff;
   border-radius: 20px;
   font-size: 13px;
   text-align: center;

@@ -40,6 +40,7 @@ import {
   saveProgress,
   type BookMeta,
 } from '../src/lib/storage'
+import { PAGE_MARGIN_MAX } from '../src/lib/settings'
 
 const { openEpubMock, mockBook, furnitureBook, divOnlyBook, linkBook } = vi.hoisted(() => {
   const openEpubMock = vi.fn()
@@ -869,6 +870,36 @@ describe('阅读器', () => {
 
       fireEvent.click(find('.panel-backdrop') as HTMLElement)
       await waitFor(() => expect(find('.bookmark-panel')).toBeNull())
+    })
+
+    it('页边距滑块调节的是"左右留白"，窄屏也真的生效', async () => {
+      await renderReader()
+      fireEvent.click(screen.getByRole('button', { name: '排版' }))
+
+      const slider = (await screen.findByLabelText('页边距')) as HTMLInputElement
+      const scroller = find('.reader-scroll') as HTMLElement
+
+      // 根因回归：旧版滑块是 480–900 的"正文最大宽度"，最小值都比手机视口宽，
+      // 于是拖到底正文宽度也纹丝不动。这里断言的是"留白"语义 + 取值区间。
+      expect(Number(slider.min)).toBe(0)
+      expect(Number(slider.max)).toBe(PAGE_MARGIN_MAX)
+      expect(Number(slider.min)).toBeLessThan(390)
+      expect(scroller.style.getPropertyValue('--reader-page-margin')).toBe('20px')
+
+      fireEvent.change(slider, { target: { value: '80' } })
+      await waitFor(() =>
+        expect(scroller.style.getPropertyValue('--reader-page-margin')).toBe('80px'),
+      )
+    })
+
+    it('切到夜间主题：.reader 挂上 theme-night（整套调色板靠它翻转）', async () => {
+      await renderReader()
+      fireEvent.click(screen.getByRole('button', { name: '排版' }))
+      fireEvent.click(await screen.findByRole('button', { name: '夜间' }))
+
+      // CSS 里的 --surface/--fg/--muted/--line 都挂在 .theme-night 下，
+      // 否则侧栏会保持纯白（"深色正文 + 刺眼白面板"）。JS 侧只需保证 class 挂上。
+      await waitFor(() => expect(find('.reader')?.classList.contains('theme-night')).toBe(true))
     })
 
     it('本机没有的字体标灰，并说明可以上传字体文件代替', async () => {
