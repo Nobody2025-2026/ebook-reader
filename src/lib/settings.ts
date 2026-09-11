@@ -10,9 +10,10 @@ export type Theme = 'day' | 'sepia' | 'night'
 
 // 字体：用直观中文名，内部是语义 key。老版本存的是 'serif'/'sans'，
 // 加载时做一次迁移（见 loadSettings 里的 normalize）。
-// 5 种跨平台字体：每种在 macOS + Windows 上都有对应字体，
-// 字体栈里西文/数字前置，中文落在对应字重（见 index.css 的 font-feature-settings）。
+// 'system' 是"不指定字体、交给各平台自己的默认中文字体"，**任何平台都真实可用**，
+// 所以它是默认值——其余 5 种依赖系统预装，在 iOS/Android 上大多不存在。
 export type FontKey =
+  | 'system'
   | 'songti'
   | 'heiti'
   | 'kaiti'
@@ -49,25 +50,38 @@ export const DEFAULT_SETTINGS: ReaderSettings = {
   // 默认 20px 留白：宽屏下正文 720px（与旧版默认的 680px 视觉接近），
   // 手机上 390−40（reader-scroll 内边距）−40 = 310px，一行约 17 个汉字。
   pageMargin: 20,
-  fontFamily: 'songti',
+  // 默认「系统默认」而不是宋体：宋体只在 macOS / Windows 上存在，
+  // 移动端（iOS / Android）压根没有这个字体文件，新用户一进设置就看到"不可用"。
+  // 系统默认在四个平台上都是真实生效的，是唯一对所有设备都成立的默认值。
+  fontFamily: 'system',
   theme: 'day',
   customFonts: [],
 }
 
-// 各字体对应的 font-family 栈（Mac 上真实可用的字体族，按优先级回退）。
-// 中文优先落在对应字重，西文/数字交给前面的西文字体（衬线用 Georgia，
-// 等宽数字用 system 的 tabular 特性，见 index.css 的 font-feature-settings）。
-// 字体栈：5 种都在 Mac + Windows 上有对应字体，回退顺序 Mac 优先、Windows 兜底。
+// 各字体对应的 font-family 栈（按优先级回退）。
+// ⚠️ 除桌面字体名外，**必须写进各移动平台真实存在的字体名**，否则探测会把
+// "本可用"的字体判成不可用。移动端常见的内置中文字体：
+//   - Android / 原生：Noto Sans CJK SC（默认中文字体，无衬线）、Noto Serif CJK SC
+//   - 华为 HarmonyOS / EMUI：HarmonyOS Sans SC
+//   - 小米 MIUI / HyperOS：MiSans
+//   - 跨平台开源：Source Han Sans/Serif SC（思源）
+// 字体栈里西文/数字前置，中文落在对应字重（见 index.css 的 font-feature-settings）。
+// 'system' 一项故意留空候选——列表为空即"不指定"，交给通用族（见 fontAvailability）。
 export const FONT_STACKS: Record<FontKey, string> = {
-  songti: '"Songti SC", "STSong", "SimSun", "宋体-简", serif',
-  heiti: '"PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif',
-  kaiti: '"Kaiti SC", "STKaiti", "楷体-简", "KaiTi", serif',
+  system:
+    'system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif',
+  songti:
+    '"Songti SC", "STSong", "SimSun", "宋体-简", "Noto Serif CJK SC", "Source Han Serif SC", serif',
+  heiti:
+    '"PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", "Source Han Sans SC", "HarmonyOS Sans SC", "MiSans", sans-serif',
+  kaiti: '"Kaiti SC", "STKaiti", "楷体-简", "KaiTi", "LXGW WenKai", serif',
   yuanti: '"Yuanti SC", "圆体-简", "STYuanti", "YouYuan", sans-serif',
   fangsong: '"STFangsong", "华文仿宋", "FangSong", "仿宋", serif',
 }
 
 // 显示名（面板按钮用）
 export const FONT_LABELS: Record<FontKey, string> = {
+  system: '系统默认',
   songti: '宋体',
   heiti: '黑体',
   kaiti: '楷体',
@@ -75,16 +89,27 @@ export const FONT_LABELS: Record<FontKey, string> = {
   fangsong: '仿宋',
 }
 
-// 内置字体按面板顺序渲染
-export const FONT_KEYS: FontKey[] = ['songti', 'heiti', 'kaiti', 'yuanti', 'fangsong']
+// 内置字体按面板顺序渲染。「系统默认」排第一，因为它是唯一到处都能用的
+export const FONT_KEYS: FontKey[] = ['system', 'songti', 'heiti', 'kaiti', 'yuanti', 'fangsong']
 
 // 运行时探测用的候选字体名（与 FONT_STACKS 里的具名候选一一对应，**不含** serif/sans-serif
 // 这类通用族——通用族一定会命中，拿它探测等于永远"可用"）。
-// 用途：iPhone Safari 会屏蔽部分系统字体名，设置面板据此把点了没反应的字体标灰。
+// 用途：设置面板据此把点了没反应的字体标灰。
+// 'system' 故意留空数组：它不依赖任何具名字体，空候选表在 detectFontAvailability 里
+// 语义为"永远可用"（用空数组表达，别在这里塞通用族）。
 export const FONT_PROBE_FAMILIES: Record<FontKey, string[]> = {
-  songti: ['Songti SC', 'STSong', 'SimSun'],
-  heiti: ['PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei'],
-  kaiti: ['Kaiti SC', 'STKaiti', 'KaiTi'],
+  system: [],
+  songti: ['Songti SC', 'STSong', 'SimSun', 'Noto Serif CJK SC', 'Source Han Serif SC'],
+  heiti: [
+    'PingFang SC',
+    'Hiragino Sans GB',
+    'Microsoft YaHei',
+    'Noto Sans CJK SC',
+    'Source Han Sans SC',
+    'HarmonyOS Sans SC',
+    'MiSans',
+  ],
+  kaiti: ['Kaiti SC', 'STKaiti', 'KaiTi', 'LXGW WenKai'],
   yuanti: ['Yuanti SC', 'STYuanti', 'YouYuan'],
   fangsong: ['STFangsong', 'FangSong'],
 }
@@ -94,9 +119,9 @@ export const FONT_PROBE_FAMILIES: Record<FontKey, string[]> = {
 export function fontStack(fontFamily: string): string {
   if (fontFamily.startsWith('cf:')) {
     const family = fontFamily.slice(3)
-    return `"${family}", sans-serif`
+    return `"${family}", ${FONT_STACKS.system}`
   }
-  return FONT_STACKS[fontFamily as FontKey] ?? FONT_STACKS.songti
+  return FONT_STACKS[fontFamily as FontKey] ?? FONT_STACKS.system
 }
 
 // 自定义字体的 settings.fontFamily 值前缀（family 是 FontFace 注册名）

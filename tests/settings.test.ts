@@ -12,6 +12,8 @@ import {
   CONTENT_MAX_PX,
   DEFAULT_SETTINGS,
   FONT_KEYS,
+  FONT_PROBE_FAMILIES,
+  FONT_STACKS,
   PAGE_MARGIN_MAX,
   customFontValue,
   fontStack,
@@ -27,12 +29,26 @@ describe('fontStack', () => {
     expect(fontStack('fangsong')).toContain('FangSong')
   })
 
-  it('自定义字体 cf: 前缀直接用 family 名', () => {
-    expect(fontStack('cf:MyFont-12ab')).toBe('"MyFont-12ab", sans-serif')
+  it('字体栈里带各移动平台真实存在的中文字体名', () => {
+    // 安卓默认中文字体：不写进来，探测会把"本可用"的黑体判成不可用
+    expect(FONT_STACKS.heiti).toContain('Noto Sans CJK SC')
+    expect(FONT_STACKS.songti).toContain('Noto Serif CJK SC')
+    // 国产 ROM 的内置中文字体
+    expect(FONT_STACKS.heiti).toContain('HarmonyOS Sans SC')
+    expect(FONT_STACKS.heiti).toContain('MiSans')
   })
 
-  it('未知 key 回落到宋体', () => {
-    expect(fontStack('not-a-font')).toContain('Songti SC')
+  it('system 走系统默认栈，且不写死任何平台专有字体名', () => {
+    expect(fontStack('system')).toContain('system-ui')
+    expect(fontStack('system')).toContain('sans-serif')
+  })
+
+  it('自定义字体 cf: 前缀直接用 family 名', () => {
+    expect(fontStack('cf:MyFont-12ab')).toContain('"MyFont-12ab"')
+  })
+
+  it('未知 key 回落到系统默认（不是宋体——宋体在移动端并不存在）', () => {
+    expect(fontStack('not-a-font')).toBe(FONT_STACKS.system)
   })
 })
 
@@ -43,10 +59,30 @@ describe('customFontValue', () => {
 })
 
 describe('FONT_KEYS', () => {
-  it('是 5 种跨平台字体，且不含 Mac 独占的冬青/思源', () => {
-    expect(FONT_KEYS).toEqual(['songti', 'heiti', 'kaiti', 'yuanti', 'fangsong'])
+  it('系统默认排第一，另有 5 种跨平台字体，且不含 Mac 独占的冬青/思源', () => {
+    expect(FONT_KEYS).toEqual(['system', 'songti', 'heiti', 'kaiti', 'yuanti', 'fangsong'])
     expect(FONT_KEYS).not.toContain('hiragino')
     expect(FONT_KEYS).not.toContain('siyuanhei')
+  })
+
+  it('默认字体是系统默认——唯一在四个平台上都真实生效的选项', () => {
+    expect(DEFAULT_SETTINGS.fontFamily).toBe('system')
+  })
+
+  it('system 的探测候选表为空（语义＝不依赖具名字体、永远可用）', () => {
+    // 空数组别改成塞通用族：通用族一定命中，等于永远"可用"，探测就没意义了
+    expect(FONT_PROBE_FAMILIES.system).toEqual([])
+    for (const key of FONT_KEYS.filter((k) => k !== 'system')) {
+      expect(FONT_PROBE_FAMILIES[key].length).toBeGreaterThan(0)
+    }
+  })
+
+  it('每个探测候选都真的写在字体栈里，否则会探测出一个栈里根本没有的字体', () => {
+    for (const key of FONT_KEYS) {
+      for (const family of FONT_PROBE_FAMILIES[key]) {
+        expect(FONT_STACKS[key]).toContain(family)
+      }
+    }
   })
 })
 
@@ -55,6 +91,16 @@ describe('loadSettings 归一化', () => {
     mockedGet.mockResolvedValue({ fontFamily: 'cf:MyFont-12ab', customFonts: [] })
     const s = await loadSettings()
     expect(s.fontFamily).toBe('cf:MyFont-12ab')
+  })
+
+  it('system 原样保留（新增的 key，别被归一化吃掉）', async () => {
+    mockedGet.mockResolvedValue({ fontFamily: 'system' })
+    expect((await loadSettings()).fontFamily).toBe('system')
+  })
+
+  it('老用户已存的宋体原样保留——不擅自改用户的显式选择', async () => {
+    mockedGet.mockResolvedValue({ fontFamily: 'songti' })
+    expect((await loadSettings()).fontFamily).toBe('songti')
   })
 
   it('早期 Mac 独占字体 hiragino/siyuanhei 回落 heiti', async () => {

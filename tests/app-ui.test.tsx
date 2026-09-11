@@ -9,7 +9,7 @@ import { Reader } from '../src/components/Reader'
 import { webBookSource } from '../src/lib/bookSource'
 
 // 真实字体探测依赖 canvas（jsdom 里 getContext 返回 null，永远测不出"不可用"），
-// 所以这里固定结论：楷体 / 圆体 / 仿宋 不可用。用来验证面板的标灰与说明文案；
+// 所以这里固定结论：楷体 / 圆体 / 仿宋 不可用。用来验证面板的禁用样式与折叠说明；
 // 探测算法本身在 fontAvailability.test.ts 与真机 Playwright 里验。
 vi.mock('../src/lib/fontAvailability', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../src/lib/fontAvailability')>()
@@ -17,6 +17,7 @@ vi.mock('../src/lib/fontAvailability', async (importOriginal) => {
     ...actual,
     canvasProbe: () => null,
     detectFontAvailability: () => ({
+      system: true,
       songti: true,
       heiti: true,
       kaiti: false,
@@ -902,7 +903,7 @@ describe('阅读器', () => {
       await waitFor(() => expect(find('.reader')?.classList.contains('theme-night')).toBe(true))
     })
 
-    it('本机没有的字体标灰，并说明可以上传字体文件代替', async () => {
+    it('本机没有的字体禁用，原因收进折叠说明（不占屏幕）', async () => {
       await renderReader()
       fireEvent.click(screen.getByRole('button', { name: '排版' }))
       await waitFor(() => expect(find('.settings-panel')).toBeTruthy())
@@ -910,8 +911,16 @@ describe('阅读器', () => {
       // 探测结果由文件顶部的 vi.mock 固定为：楷体/圆体/仿宋 不可用
       await waitFor(() => expect(screen.getByRole('button', { name: /楷体/ })).toBeDisabled())
       expect(screen.getByRole('button', { name: /宋体/ })).toBeEnabled()
-      expect(screen.getAllByText('不可用')).toHaveLength(3)
-      expect(screen.getByText(/Safari 会屏蔽系统字体名/)).toBeInTheDocument()
+
+      // 「系统默认」永远可选——用户面对"内置字体都不行"时至少有得选，不会以为功能坏了
+      expect(screen.getByRole('button', { name: '系统默认' })).toBeEnabled()
+
+      // 说明只在摘要里占一行，点开才展开全文；文案不写死平台名（安卓上也看得到）
+      const summary = screen.getByText('3 种字体在本机不可用')
+      expect(summary.closest('details')).toBeTruthy()
+      expect(summary.closest('details')).not.toHaveAttribute('open')
+      expect(screen.getByText(/本机没有这些字体文件/)).toBeInTheDocument()
+      expect(screen.queryByText(/Safari/)).toBeNull()
     })
   })
 

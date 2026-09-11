@@ -444,7 +444,9 @@ body {
   padding: 32px var(--reader-page-margin, 20px);
   font-size: var(--reader-font-size, 18px);
   line-height: var(--reader-line-height, 1.9);
-  font-family: var(--reader-font-family, Georgia, "Songti SC", serif);
+  /* 兜底值必须与 settings.ts 的 FONT_STACKS.system 一致：变量一定被内联注入，
+     这里只在注入失败时生效，别再写死某个平台专有字体名 */
+  font-family: var(--reader-font-family, system-ui, sans-serif);
   /* 数字用等宽表格式数字（lining/tabular figures），避免宋体/楷体里
      老式不等宽数字（old-style figures）导致 45.3% 这类数字参差不齐 */
   font-variant-numeric: tabular-nums lining-nums;
@@ -1224,30 +1226,62 @@ body {
   outline-offset: 2px;
 }
 
-/* 字体面板：本机不可用的字体标灰 + 角标，并给一句可操作的说明 */
+/* 字体面板：本机没有的字体文件直接禁用。淡化本身就是"不可用"的通用视觉语言，
+   不再逐个挂「不可用」角标——手机面板只有 390px 宽，5 个角标太吵。
+   原因收进下面的折叠说明，需要时点开看。 */
 .settings-pill:disabled {
-  opacity: 0.45;
+  opacity: 0.4;
   cursor: not-allowed;
-}
-
-/* 字体按钮默认锁 72px 固定宽，塞不下「不可用」角标 → 放大到能装下 */
-.settings-pill--font:disabled {
-  flex: 0 0 auto;
-  min-width: 72px;
-  padding: 8px 10px;
 }
 
 .settings-pill:disabled:hover {
   border-color: var(--line);
 }
 
-.settings-pill__flag {
-  margin-left: 6px;
+/* 折叠说明：默认只占一行摘要，点开才展开全文 */
+.settings-details {
+  margin-top: 10px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--muted);
+}
+
+.settings-details > summary {
+  cursor: pointer;
+  list-style: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 0;
+  color: var(--muted);
+}
+
+.settings-details > summary::-webkit-details-marker {
+  display: none;
+}
+
+.settings-details > summary::before {
+  content: '▸';
   font-size: 10px;
+}
+
+.settings-details[open] > summary::before {
+  content: '▾';
+}
+
+.settings-details > summary:hover {
+  color: var(--fg);
+}
+
+.settings-details__body {
+  margin: 4px 0 0 14px;
+}
+
+.settings-details code {
+  font-size: 11px;
   padding: 1px 4px;
   border-radius: 4px;
-  background: var(--line);
-  color: var(--muted);
+  background: var(--bg);
 }
 
 .settings-hint {

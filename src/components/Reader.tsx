@@ -139,7 +139,8 @@ export function Reader({ bookId, onExit }: Props) {
   // 手指按下时的坐标与时间，抬手时用来判断是"点"还是"划"
   const touchStartRef = useRef<TouchPoint | null>(null)
 
-  // 内置字体在本机的真实可用性（iPhone Safari 会屏蔽部分系统字体名 → 点了没反应）
+  // 内置字体在本机的真实可用性（移动端普遍没有宋体/楷体这套桌面字体，且部分
+  // 浏览器会屏蔽系统字体名 → 点了没反应）。探测不可信时这里全是 true，即不标灰。
   const [fontUsable, setFontUsable] = useState<Record<string, boolean>>({})
 
   const bookRef = useRef<OpenedBook | null>(null)
@@ -622,6 +623,9 @@ export function Reader({ bookId, onExit }: Props) {
       alive = false
     }
   }, [settings.customFonts.length])
+
+  // 本机不可用的内置字体（面板把这些标灰；数量用于折叠说明的摘要文案）
+  const unavailableFonts = FONT_KEYS.filter((f) => fontUsable[f] === false)
 
   // 选中的内置字体本机不可用（自定义字体一定会被 FontFace 注册，不参与判定）
   const isSelectedFontUnavailable =
@@ -1364,19 +1368,21 @@ export function Reader({ bookId, onExit }: Props) {
                 </div>
                 <div className="settings-row">
                   {FONT_KEYS.map((f) => {
-                    // 本机/本浏览器没这个字体（iPhone Safari 会屏蔽系统字体名）：
-                    // 点了也不会变，直接标灰并说明原因，免得用户以为"设置坏了"。
+                    // 本机没有这个字体文件（iOS / Android 都没有宋体、楷体这套桌面字体，
+                    // 部分浏览器还会屏蔽系统字体名）：点了也不会有任何变化，
+                    // 直接禁用（淡化即"不可用"的通用视觉语言），原因放在下面的折叠说明里。
+                    // 不再逐个按钮挂"不可用"角标——手机面板本来就窄，5 个角标太吵。
                     const usable = fontUsable[f] !== false
                     return (
                       <button
                         key={f}
                         className={`settings-pill settings-pill--font${settings.fontFamily === f ? ' active' : ''}`}
                         disabled={!usable}
-                        title={usable ? undefined : `${FONT_LABELS[f]}在当前浏览器里不可用`}
+                        aria-label={usable ? undefined : `${FONT_LABELS[f]}（本机不可用）`}
+                        title={usable ? undefined : `${FONT_LABELS[f]}在本机不可用`}
                         onClick={() => updateSettings({ fontFamily: f })}
                       >
                         {FONT_LABELS[f]}
-                        {!usable && <span className="settings-pill__flag">不可用</span>}
                       </button>
                     )
                   })}
@@ -1422,16 +1428,18 @@ export function Reader({ bookId, onExit }: Props) {
                     onChange={(e) => void handleFontFile(e)}
                   />
                 </div>
-                {Object.values(fontUsable).some((v) => !v) && (
-                  <p className="settings-hint">
-                    灰色的字体在本机不可用——iPhone 的 Safari 会屏蔽系统字体名（桌面版与 Chrome 不受影响）。
-                    想固定字形，用「＋自定义」上传字体文件（<code>.ttf</code> / <code>.otf</code>），
-                    走 FontFace 注册，各平台表现一致。
-                  </p>
+                {unavailableFonts.length > 0 && (
+                  <details className="settings-details">
+                    <summary>{unavailableFonts.length} 种字体在本机不可用</summary>
+                    <p className="settings-details__body">
+                      本机没有这些字体文件，选了也不会有变化。想固定字形，用「＋自定义」上传
+                      <code>.ttf</code> / <code>.otf</code> 字体文件，各平台表现一致。
+                    </p>
+                  </details>
                 )}
                 {isSelectedFontUnavailable && (
                   <p className="settings-hint settings-hint--warn">
-                    当前选中的「{FONT_LABELS[settings.fontFamily as FontKey]}」在本机不可用，正文实际用的是浏览器替代字体。
+                    「{FONT_LABELS[settings.fontFamily as FontKey]}」在本机不生效，正文用的是系统替代字体。
                   </p>
                 )}
               </div>
