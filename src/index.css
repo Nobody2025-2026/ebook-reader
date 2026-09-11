@@ -346,6 +346,10 @@ body {
 /* ---------- 阅读器 ---------- */
 .reader {
   height: 100vh;
+  /* iOS Safari / Chrome 的地址栏会伸缩，100vh 用的是"工具栏收起"的大视口，
+     工具栏展开时正文底部会被遮住（最后一行看不到）。dvh 跟随实际可视高度；
+     老浏览器不认就退回上一行的 vh。 */
+  height: 100dvh;
   display: flex;
   flex-direction: column;
 }
