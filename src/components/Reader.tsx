@@ -51,6 +51,12 @@ import {
   type BlockAnchor,
 } from '../lib/highlight'
 import { extractBookTexts, searchChapters, type SearchHit } from '../lib/search'
+import {
+  detectSwipe,
+  isTap,
+  resolveTapZone,
+  type TouchPoint,
+} from '../lib/gestures'
 
 // 块级元素选择器：覆盖小说/学术书里绝大多数情况。
 // 真实样本《涛动周期论》里就是这几种在撑页面。
@@ -122,6 +128,12 @@ export function Reader({ bookId, onExit }: Props) {
   const [results, setResults] = useState<SearchHit[]>([])
   // 搜索文本抽取结果缓存（一本书只抽一次）
   const bookTextsRef = useRef<string[] | null>(null)
+
+  // ---- 触屏手势（P0-3）----
+  // 顶栏是否隐藏：手机上这条栏占掉一整行，点正文中间即可收起/唤出。
+  const [chromeHidden, setChromeHidden] = useState(false)
+  // 手指按下时的坐标与时间，抬手时用来判断是"点"还是"划"
+  const touchStartRef = useRef<TouchPoint | null>(null)
 
   const bookRef = useRef<OpenedBook | null>(null)
   const chaptersRef = useRef<ChapterRef[]>([])
@@ -564,6 +576,82 @@ export function Reader({ bookId, onExit }: Props) {
     },
     [jumpTo, annotations],
   )
+
+  /** 滚一屏。dir=1 下一屏，-1 上一屏；触屏用平滑，键盘沿用瞬时 */
+  const scrollPage = useCallback((dir: 1 | -1, smooth = false) => {
+    const container = containerRef.current
+    if (!container) return
+    const page = Math.max(container.clientHeight - 48, 200) // 与键盘翻页同一步长，留 48px 视觉衔接
+    container.scrollBy({ top: dir * page, behavior: smooth ? 'smooth' : 'auto' })
+  }, [])
+
+  // ---- 触屏手势（P0-3）----
+  // 只认 touch：鼠标点正文有"选词/放光标/关浮层"的语义，
+  // 若把鼠标点击也当翻页，选词点一下就翻页了，等于把 P1 的高亮功能废掉。
+  const handleTouchStart = useCallback((e: React.TouchEvent<HTMLDivElement>) => {
+    const t = e.changedTouches[0]
+    if (!t) return
+    touchStartRef.current = { x: t.clientX, y: t.clientY, t: Date.now() }
+  }, [])
+
+  const handleTouchEnd = useCallback(
+    (e: React.TouchEvent<HTMLDivElement>) => {
+      const start = touchStartRef.current
+      touchStartRef.current = null
+      const t = e.changedTouches[0]
+      if (!start || !t) return
+
+      const end: TouchPoint = { x: t.clientX, y: t.clientY, t: Date.now() }
+
+      // 1) 左右滑动翻屏（纵向为主的是普通滚动，交给原生）
+      const swipe = detectSwipe(start, end)
+      if (swipe !== 'none') {
+        // 拦掉抬手后的合成 click，否则可能连带点到链接/高亮
+        e.preventDefault()
+        scrollPage(swipe === 'next' ? 1 : -1, true)
+        return
+      }
+
+      if (!isTap(start, end)) return
+
+      const target = e.target as HTMLElement | null
+      // 2) 落在链接 / 按钮 / 高亮 / 图片上的点按，一律交给原来的点击逻辑，
+      //    不能"点脚注顺便翻一屏"
+      if (target?.closest?.('a, button, mark, img, input, textarea, .ann-popover, .sel-popover')) return
+      // 3) 有选区说明用户在选词加高亮，别动
+      const sel = typeof window !== 'undefined' ? window.getSelection?.() : null
+      if (sel && !sel.isCollapsed) return
+
+      // 4) 侧栏开着时，点正文 = 关掉侧栏（手机上没有别的地方可点）
+      if (tocOpen || settingsOpen || bookmarksOpen || searchOpen || exportOpen) {
+        e.preventDefault()
+        setTocOpen(false)
+        setSettingsOpen(false)
+        setBookmarksOpen(false)
+        setSearchOpen(false)
+        setExportOpen(false)
+        return
+      }
+
+      const container = containerRef.current
+      if (!container) return
+
+      const zone = resolveTapZone(t.clientX - container.getBoundingClientRect().left, container.clientWidth)
+      if (zone === 'center') {
+        e.preventDefault()
+        setChromeHidden((v) => !v)
+        return
+      }
+      e.preventDefault()
+      scrollPage(zone === 'next' ? 1 : -1, true)
+    },
+    [scrollPage, tocOpen, settingsOpen, bookmarksOpen, searchOpen, exportOpen],
+  )
+
+  // 侧栏一开就必须把顶栏叫回来，否则按钮被藏起来了还没法再点开
+  useEffect(() => {
+    if (tocOpen || settingsOpen || bookmarksOpen || searchOpen || exportOpen) setChromeHidden(false)
+  }, [tocOpen, settingsOpen, bookmarksOpen, searchOpen, exportOpen])
 
   /** 当前视口顶压着的块。和滚动记进度用同一套定位，保证书签落在读者看到的位置 */
   const getCurrentAnchor = useCallback((): { chapterIndex: number; blockIndex: number } => {
@@ -1031,7 +1119,11 @@ export function Reader({ bookId, onExit }: Props) {
   }
 
   return (
-    <div className={`reader theme-${settings.theme}`}>
+    <div
+      className={`reader theme-${settings.theme}${chromeHidden ? ' is-chrome-hidden' : ''}`}
+      // 顶栏收起后给它一个可发现性提示：手机用户不知道"点中间能叫回来"
+      data-chrome-hidden={chromeHidden ? 'true' : undefined}
+    >
       <header className="reader-bar">
         <button className="btn btn-ghost" onClick={onExit} title="返回书库（Esc）">
           ← 书库
@@ -1096,6 +1188,8 @@ export function Reader({ bookId, onExit }: Props) {
           aria-label="正文"
           onScroll={handleScroll}
           onClick={handleContentClick}
+          onTouchStart={handleTouchStart}
+          onTouchEnd={handleTouchEnd}
           onMouseUp={() => openSelectionPopover()}
           style={{
             '--reader-font-size': `${settings.fontSize}px`,

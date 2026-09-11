@@ -706,6 +706,113 @@ describe('阅读器', () => {
     expect(scrollBy).toHaveBeenCalledTimes(5)
   })
 
+  // ↓↓ P0-3：触屏手势。手机上"能看不能翻"是硬伤 —— 实测点左/右/中 scrollTop 全 Δ0
+  describe('触屏手势（点按翻屏 / 滑动翻屏 / 点中间收起顶栏）', () => {
+    /** jsdom 没有 TouchEvent，手动造一个带 changedTouches 的可冒泡事件喂给 React */
+    const fireTouch = (el: Element, type: 'touchstart' | 'touchend', x: number, y: number) => {
+      const ev = new Event(type, { bubbles: true, cancelable: true })
+      Object.defineProperty(ev, 'changedTouches', { value: [{ clientX: x, clientY: y }] })
+      fireEvent(el, ev)
+    }
+
+    /** 起一个阅读页；jsdom 里 clientWidth 恒为 0，必须伪造，否则点按分区全落中间区 */
+    const setup = async () => {
+      await saveBook(meta, new File(['a'], 'book.epub'))
+      const { container } = render(<Reader bookId="b1" onExit={vi.fn()} />)
+      await waitFor(() => expect(screen.getByText('c1 的正文')).toBeInTheDocument())
+      const scroller = container.querySelector('.reader-scroll') as HTMLElement
+      Object.defineProperty(scroller, 'clientHeight', { value: 600, configurable: true })
+      Object.defineProperty(scroller, 'clientWidth', { value: 1000, configurable: true })
+      const scrollBy = vi.fn()
+      scroller.scrollBy = scrollBy as unknown as typeof scroller.scrollBy
+      return { reader: container.querySelector('.reader') as HTMLElement, scroller, scrollBy }
+    }
+
+    it('点右侧区域 = 下一屏，点左侧 = 上一屏（触屏用平滑滚动）', async () => {
+      const { scroller, scrollBy } = await setup()
+
+      fireTouch(scroller, 'touchstart', 900, 300)
+      fireTouch(scroller, 'touchend', 900, 300)
+      expect(scrollBy).toHaveBeenLastCalledWith({ top: 552, behavior: 'smooth' })
+
+      fireTouch(scroller, 'touchstart', 100, 300)
+      fireTouch(scroller, 'touchend', 100, 300)
+      expect(scrollBy).toHaveBeenLastCalledWith({ top: -552, behavior: 'smooth' })
+    })
+
+    it('点中间 = 收起/唤出顶栏，不翻页', async () => {
+      const { reader, scroller, scrollBy } = await setup()
+      expect(reader.className).not.toContain('is-chrome-hidden')
+
+      fireTouch(scroller, 'touchstart', 500, 300)
+      fireTouch(scroller, 'touchend', 500, 300)
+      expect(reader.className).toContain('is-chrome-hidden')
+      expect(scrollBy).not.toHaveBeenCalled()
+
+      // 再点一次叫回来
+      fireTouch(scroller, 'touchstart', 500, 300)
+      fireTouch(scroller, 'touchend', 500, 300)
+      expect(reader.className).not.toContain('is-chrome-hidden')
+    })
+
+    it('左右滑动翻屏；纵向滑动交还原生滚动', async () => {
+      const { scroller, scrollBy } = await setup()
+
+      // 右 → 左：下一屏
+      fireTouch(scroller, 'touchstart', 800, 300)
+      fireTouch(scroller, 'touchend', 300, 300)
+      expect(scrollBy).toHaveBeenLastCalledWith({ top: 552, behavior: 'smooth' })
+
+      // 左 → 右：上一屏
+      fireTouch(scroller, 'touchstart', 300, 300)
+      fireTouch(scroller, 'touchend', 800, 300)
+      expect(scrollBy).toHaveBeenLastCalledWith({ top: -552, behavior: 'smooth' })
+
+      scrollBy.mockClear()
+      // 纯上下划：这是普通滚动，不能抢
+      fireTouch(scroller, 'touchstart', 500, 300)
+      fireTouch(scroller, 'touchend', 500, 120)
+      expect(scrollBy).not.toHaveBeenCalled()
+    })
+
+    it('点链接 / 高亮时不翻页（否则点脚注会顺带翻一屏）', async () => {
+      const { scroller, scrollBy } = await setup()
+      const link = document.createElement('a')
+      link.href = '#note1'
+      link.textContent = '脚注'
+      scroller.querySelector('.chapter')?.appendChild(link)
+
+      fireTouch(link, 'touchstart', 500, 300)
+      fireTouch(link, 'touchend', 500, 300)
+      expect(scrollBy).not.toHaveBeenCalled()
+    })
+
+    it('有选区时不翻页（选词加高亮不能顺带翻页）', async () => {
+      const { scroller, scrollBy } = await setup()
+      const spy = vi
+        .spyOn(window, 'getSelection')
+        .mockReturnValue({ isCollapsed: false } as unknown as Selection)
+      try {
+        fireTouch(scroller, 'touchstart', 900, 300)
+        fireTouch(scroller, 'touchend', 900, 300)
+        expect(scrollBy).not.toHaveBeenCalled()
+      } finally {
+        spy.mockRestore()
+      }
+    })
+
+    it('侧栏开着时，点正文只关侧栏、不翻页', async () => {
+      const { scroller, scrollBy } = await setup()
+      fireEvent.click(screen.getByRole('button', { name: '目录' }))
+      await waitFor(() => expect(document.querySelector('.toc-panel')).toBeTruthy())
+
+      fireTouch(scroller, 'touchstart', 900, 300)
+      fireTouch(scroller, 'touchend', 900, 300)
+      expect(scrollBy).not.toHaveBeenCalled()
+      await waitFor(() => expect(document.querySelector('.toc-panel')).toBeNull())
+    })
+  })
+
   it('有进度时打开书，显示「已回到上次阅读位置」提示', async () => {
     await saveBook(meta, new File(['a'], 'book.epub'))
     await saveProgress('b1', { chapterIndex: 1, blockIndex: 0, percent: 40, updatedAt: Date.now() })

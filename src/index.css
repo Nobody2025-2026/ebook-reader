@@ -374,11 +374,50 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+/* 顶栏收起（点正文中间切换）。用 display:none 而不是 transform，
+   收起后正文区立刻吃掉那一行高度，不留空白。 */
+.reader.is-chrome-hidden .reader-bar {
+  display: none;
+}
+
 .reader-scroll {
   flex: 1;
   overflow-y: auto;
   position: relative;
   padding: 0 20px;
+  /* 只把纵向滑动交给浏览器：既避免横向过度滚动露白，也让我们的左右滑动手势
+     不被浏览器抢走。overscroll-behavior 顺手关掉手机上的下拉刷新。 */
+  touch-action: pan-y;
+  overscroll-behavior-y: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* 手机：顶栏 7 个按钮必然挤爆一行，让它横向可滑；按钮加大到 44px 触控区 */
+@media (max-width: 720px) {
+  .reader-bar {
+    gap: 8px;
+    padding: 6px 10px;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .reader-bar::-webkit-scrollbar {
+    display: none;
+  }
+
+  .reader-bar .btn {
+    flex: none;
+    min-height: 36px;
+    padding: 6px 10px;
+  }
+
+  .reader-title {
+    display: none;
+  }
+
+  .reader-scroll {
+    padding: 0 14px;
+  }
 }
 
 /* 正文区加了 tabIndex=0，鼠标点进来不该冒描边；键盘 Tab 进来才给可见焦点 */
