@@ -7,6 +7,24 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { Library, UNDO_DELETE_MS } from '../src/components/Library'
 import { Reader } from '../src/components/Reader'
 import { webBookSource } from '../src/lib/bookSource'
+
+// 真实字体探测依赖 canvas（jsdom 里 getContext 返回 null，永远测不出"不可用"），
+// 所以这里固定结论：楷体 / 圆体 / 仿宋 不可用。用来验证面板的标灰与说明文案；
+// 探测算法本身在 fontAvailability.test.ts 与真机 Playwright 里验。
+vi.mock('../src/lib/fontAvailability', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/lib/fontAvailability')>()
+  return {
+    ...actual,
+    canvasProbe: () => null,
+    detectFontAvailability: () => ({
+      songti: true,
+      heiti: true,
+      kaiti: false,
+      yuanti: false,
+      fangsong: false,
+    }),
+  }
+})
 import {
   addBookmark,
   clearProgress,
@@ -810,6 +828,59 @@ describe('阅读器', () => {
       fireTouch(scroller, 'touchend', 900, 300)
       expect(scrollBy).not.toHaveBeenCalled()
       await waitFor(() => expect(document.querySelector('.toc-panel')).toBeNull())
+    })
+  })
+
+  // ↓↓ 手机实测反馈：目录与排版能同时打开、排版被裁掉一半、字体点了没反应却毫无解释
+  describe('侧栏互斥 / 遮罩关闭 / 字体可用性提示', () => {
+    const renderReader = async () => {
+      await saveBook(meta, new File(['a'], 'book.epub'))
+      render(<Reader bookId="b1" onExit={vi.fn()} />)
+      await waitFor(() => expect(screen.getByText('c1 的正文')).toBeInTheDocument())
+    }
+    const find = (sel: string) => document.querySelector(sel)
+
+    it('开排版会自动关掉目录：一次只允许开一个面板', async () => {
+      await renderReader()
+
+      fireEvent.click(screen.getByRole('button', { name: '目录' }))
+      await waitFor(() => expect(find('.toc-panel')).toBeTruthy())
+
+      fireEvent.click(screen.getByRole('button', { name: '排版' }))
+      await waitFor(() => expect(find('.settings-panel')).toBeTruthy())
+      // 手机上两个 280/300px 的面板并排 = 正文被挤成一条缝、右边那个还被裁掉
+      expect(find('.toc-panel')).toBeNull()
+    })
+
+    it('再点同一个按钮 = 收起', async () => {
+      await renderReader()
+      fireEvent.click(screen.getByRole('button', { name: '排版' }))
+      await waitFor(() => expect(find('.settings-panel')).toBeTruthy())
+      fireEvent.click(screen.getByRole('button', { name: '排版' }))
+      await waitFor(() => expect(find('.settings-panel')).toBeNull())
+    })
+
+    it('面板打开时渲染遮罩，点遮罩收起（手机底部浮层的关闭路径）', async () => {
+      await renderReader()
+
+      fireEvent.click(screen.getByRole('button', { name: '书签' }))
+      await waitFor(() => expect(find('.bookmark-panel')).toBeTruthy())
+      expect(find('.panel-backdrop')).toBeTruthy()
+
+      fireEvent.click(find('.panel-backdrop') as HTMLElement)
+      await waitFor(() => expect(find('.bookmark-panel')).toBeNull())
+    })
+
+    it('本机没有的字体标灰，并说明可以上传字体文件代替', async () => {
+      await renderReader()
+      fireEvent.click(screen.getByRole('button', { name: '排版' }))
+      await waitFor(() => expect(find('.settings-panel')).toBeTruthy())
+
+      // 探测结果由文件顶部的 vi.mock 固定为：楷体/圆体/仿宋 不可用
+      await waitFor(() => expect(screen.getByRole('button', { name: /楷体/ })).toBeDisabled())
+      expect(screen.getByRole('button', { name: /宋体/ })).toBeEnabled()
+      expect(screen.getAllByText('不可用')).toHaveLength(3)
+      expect(screen.getByText(/Safari 会屏蔽系统字体名/)).toBeInTheDocument()
     })
   })
 

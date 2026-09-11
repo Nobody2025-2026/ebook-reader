@@ -33,10 +33,12 @@ import {
   FONT_KEYS,
   FONT_LABELS,
   customFontValue,
+  FONT_PROBE_FAMILIES,
   fontStack,
   loadSettings,
   saveSettings,
   type CustomFont,
+  type FontKey,
   type ReaderSettings,
 } from '../lib/settings'
 import {
@@ -57,6 +59,7 @@ import {
   resolveTapZone,
   type TouchPoint,
 } from '../lib/gestures'
+import { canvasProbe, detectFontAvailability } from '../lib/fontAvailability'
 
 // 块级元素选择器：覆盖小说/学术书里绝大多数情况。
 // 真实样本《涛动周期论》里就是这几种在撑页面。
@@ -134,6 +137,9 @@ export function Reader({ bookId, onExit }: Props) {
   const [chromeHidden, setChromeHidden] = useState(false)
   // 手指按下时的坐标与时间，抬手时用来判断是"点"还是"划"
   const touchStartRef = useRef<TouchPoint | null>(null)
+
+  // 内置字体在本机的真实可用性（iPhone Safari 会屏蔽部分系统字体名 → 点了没反应）
+  const [fontUsable, setFontUsable] = useState<Record<string, boolean>>({})
 
   const bookRef = useRef<OpenedBook | null>(null)
   const chaptersRef = useRef<ChapterRef[]>([])
@@ -577,6 +583,49 @@ export function Reader({ bookId, onExit }: Props) {
     [jumpTo, annotations],
   )
 
+  // ---- 侧栏互斥（手机上的硬伤）----
+  // 之前「目录」「排版」两个按钮各自 toggle 自己，谁都不关对方：手机上
+  // 280px 目录 + 300px 排版 = 580px > 屏幕宽，正文被挤成一条缝、右边的排版还被裁掉一半。
+  // 现在统一走一个入口：**一次只允许开一个面板**。
+  const closeAllPanels = useCallback(() => {
+    setTocOpen(false)
+    setSettingsOpen(false)
+    setBookmarksOpen(false)
+    setSearchOpen(false)
+    setExportOpen(false)
+  }, [])
+
+  const togglePanel = useCallback(
+    (name: 'toc' | 'settings' | 'bookmarks' | 'search') => {
+      setTocOpen((v) => (name === 'toc' ? !v : false))
+      setSettingsOpen((v) => (name === 'settings' ? !v : false))
+      setBookmarksOpen((v) => (name === 'bookmarks' ? !v : false))
+      setSearchOpen((v) => (name === 'search' ? !v : false))
+      setExportOpen(false)
+    },
+    [],
+  )
+
+  // 开机（含上传自定义字体后）探一次内置字体的真实可用性。
+  // 等 fonts.ready：自定义字体是 FontFace 注册的，抢跑会把刚传的字体误判成不可用。
+  useEffect(() => {
+    let alive = true
+    const run = () => {
+      if (!alive) return
+      setFontUsable(detectFontAvailability(FONT_PROBE_FAMILIES, canvasProbe()))
+    }
+    const ready = typeof document !== 'undefined' ? document.fonts?.ready : undefined
+    if (ready) void ready.then(run).catch(run)
+    else run()
+    return () => {
+      alive = false
+    }
+  }, [settings.customFonts.length])
+
+  // 选中的内置字体本机不可用（自定义字体一定会被 FontFace 注册，不参与判定）
+  const isSelectedFontUnavailable =
+    (FONT_KEYS as string[]).includes(settings.fontFamily) && fontUsable[settings.fontFamily] === false
+
   /** 滚一屏。dir=1 下一屏，-1 上一屏；触屏用平滑，键盘沿用瞬时 */
   const scrollPage = useCallback((dir: 1 | -1, smooth = false) => {
     const container = containerRef.current
@@ -625,11 +674,7 @@ export function Reader({ bookId, onExit }: Props) {
       // 4) 侧栏开着时，点正文 = 关掉侧栏（手机上没有别的地方可点）
       if (tocOpen || settingsOpen || bookmarksOpen || searchOpen || exportOpen) {
         e.preventDefault()
-        setTocOpen(false)
-        setSettingsOpen(false)
-        setBookmarksOpen(false)
-        setSearchOpen(false)
-        setExportOpen(false)
+        closeAllPanels()
         return
       }
 
@@ -645,7 +690,7 @@ export function Reader({ bookId, onExit }: Props) {
       e.preventDefault()
       scrollPage(zone === 'next' ? 1 : -1, true)
     },
-    [scrollPage, tocOpen, settingsOpen, bookmarksOpen, searchOpen, exportOpen],
+    [scrollPage, tocOpen, settingsOpen, bookmarksOpen, searchOpen, exportOpen, closeAllPanels],
   )
 
   // 侧栏一开就必须把顶栏叫回来，否则按钮被藏起来了还没法再点开
@@ -1131,39 +1176,34 @@ export function Reader({ bookId, onExit }: Props) {
         <span className="reader-title">{title}</span>
         <button
           className="btn btn-ghost"
-          onClick={() => setTocOpen((v) => !v)}
+          onClick={() => togglePanel('toc')}
           title="目录"
           disabled={toc.length === 0}
+          aria-expanded={tocOpen}
         >
           目录
         </button>
         <button
           className="btn btn-ghost"
-          onClick={() => setSettingsOpen((v) => !v)}
+          onClick={() => togglePanel('settings')}
           title="排版"
+          aria-expanded={settingsOpen}
         >
           排版
         </button>
         <button
           className="btn btn-ghost"
-          onClick={() => {
-            setTocOpen(false)
-            setSettingsOpen(false)
-            setBookmarksOpen((v) => !v)
-          }}
+          onClick={() => togglePanel('bookmarks')}
           title="书签"
+          aria-expanded={bookmarksOpen}
         >
           书签{bookmarks.length > 0 ? ` ${bookmarks.length}` : ''}
         </button>
         <button
           className="btn btn-ghost"
-          onClick={() => {
-            setTocOpen(false)
-            setSettingsOpen(false)
-            setBookmarksOpen(false)
-            setSearchOpen((v) => !v)
-          }}
+          onClick={() => togglePanel('search')}
           title="搜索本书"
+          aria-expanded={searchOpen}
         >
           搜索
         </button>
@@ -1219,6 +1259,12 @@ export function Reader({ bookId, onExit }: Props) {
             </article>
           ))}
         </div>
+
+        {/* 手机上侧栏是从底部升起的浮层，这层遮罩负责"点空白处关掉"；
+            桌面端两个面板是并排的侧栏，遮罩在 CSS 里被隐藏。 */}
+        {(tocOpen || settingsOpen || bookmarksOpen || searchOpen || exportOpen) && (
+          <div className="panel-backdrop" onClick={closeAllPanels} aria-hidden="true" />
+        )}
 
         {tocOpen && (
           <aside className="toc-panel">
@@ -1312,15 +1358,23 @@ export function Reader({ bookId, onExit }: Props) {
                   <span>字体</span>
                 </div>
                 <div className="settings-row">
-                  {FONT_KEYS.map((f) => (
-                    <button
-                      key={f}
-                      className={`settings-pill settings-pill--font${settings.fontFamily === f ? ' active' : ''}`}
-                      onClick={() => updateSettings({ fontFamily: f })}
-                    >
-                      {FONT_LABELS[f]}
-                    </button>
-                  ))}
+                  {FONT_KEYS.map((f) => {
+                    // 本机/本浏览器没这个字体（iPhone Safari 会屏蔽系统字体名）：
+                    // 点了也不会变，直接标灰并说明原因，免得用户以为"设置坏了"。
+                    const usable = fontUsable[f] !== false
+                    return (
+                      <button
+                        key={f}
+                        className={`settings-pill settings-pill--font${settings.fontFamily === f ? ' active' : ''}`}
+                        disabled={!usable}
+                        title={usable ? undefined : `${FONT_LABELS[f]}在当前浏览器里不可用`}
+                        onClick={() => updateSettings({ fontFamily: f })}
+                      >
+                        {FONT_LABELS[f]}
+                        {!usable && <span className="settings-pill__flag">不可用</span>}
+                      </button>
+                    )
+                  })}
                   {settings.customFonts.map((cf: CustomFont) => {
                     const active = settings.fontFamily === customFontValue(cf.family)
                     return (
@@ -1363,6 +1417,18 @@ export function Reader({ bookId, onExit }: Props) {
                     onChange={(e) => void handleFontFile(e)}
                   />
                 </div>
+                {Object.values(fontUsable).some((v) => !v) && (
+                  <p className="settings-hint">
+                    灰色的字体在本机不可用——iPhone 的 Safari 会屏蔽系统字体名（桌面版与 Chrome 不受影响）。
+                    想固定字形，用「＋自定义」上传字体文件（<code>.ttf</code> / <code>.otf</code>），
+                    走 FontFace 注册，各平台表现一致。
+                  </p>
+                )}
+                {isSelectedFontUnavailable && (
+                  <p className="settings-hint settings-hint--warn">
+                    当前选中的「{FONT_LABELS[settings.fontFamily as FontKey]}」在本机不可用，正文实际用的是浏览器替代字体。
+                  </p>
+                )}
               </div>
 
               <div className="settings-group">

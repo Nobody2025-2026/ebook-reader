@@ -70,6 +70,17 @@ export const FONT_LABELS: Record<FontKey, string> = {
 // 内置字体按面板顺序渲染
 export const FONT_KEYS: FontKey[] = ['songti', 'heiti', 'kaiti', 'yuanti', 'fangsong']
 
+// 运行时探测用的候选字体名（与 FONT_STACKS 里的具名候选一一对应，**不含** serif/sans-serif
+// 这类通用族——通用族一定会命中，拿它探测等于永远"可用"）。
+// 用途：iPhone Safari 会屏蔽部分系统字体名，设置面板据此把点了没反应的字体标灰。
+export const FONT_PROBE_FAMILIES: Record<FontKey, string[]> = {
+  songti: ['Songti SC', 'STSong', 'SimSun'],
+  heiti: ['PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei'],
+  kaiti: ['Kaiti SC', 'STKaiti', 'KaiTi'],
+  yuanti: ['Yuanti SC', 'STYuanti', 'YouYuan'],
+  fangsong: ['STFangsong', 'FangSong'],
+}
+
 // 把存储的 fontFamily 值解析成 CSS font-family 栈：
 // 内置字体查表；自定义字体 'cf:<family>' 直接用该 family 名（FontFace 已注册）。
 export function fontStack(fontFamily: string): string {
