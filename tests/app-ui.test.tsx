@@ -671,26 +671,39 @@ describe('阅读器', () => {
     expect(onExit).toHaveBeenCalled()
   })
 
-  it('方向键/空格翻屏，Home 回开头', async () => {
+  it('方向键四向 + 空格都翻屏，正文区可聚焦', async () => {
     await saveBook(meta, new File(['a'], 'book.epub'))
     const { container } = render(<Reader bookId="b1" onExit={vi.fn()} />)
     await waitFor(() => expect(screen.getByText('c1 的正文')).toBeInTheDocument())
 
     const scroller = container.querySelector('.reader-scroll') as HTMLElement
+    // tabIndex=0：正文区进 Tab 序列，浏览器原生滚动也有落点。
+    // 原来 -1，既不可聚焦，↑/↓ 又没接 → 用户按上下键完全没反应。
+    expect(scroller.getAttribute('tabindex')).toBe('0')
     // 给滚动容器一个高度，否则 clientHeight=0，翻屏量退化为 200
     Object.defineProperty(scroller, 'clientHeight', { value: 600, configurable: true })
     // jsdom 没实现 scrollBy，这里 spy 验证被调用
     const scrollBy = vi.fn()
     scroller.scrollBy = scrollBy as unknown as typeof scroller.scrollBy
 
+    // 翻屏量 = clientHeight - 48（留 48px 视觉衔接）
     fireEvent.keyDown(window, { key: 'ArrowRight' })
-    expect(scrollBy).toHaveBeenCalled()
+    expect(scrollBy).toHaveBeenLastCalledWith({ top: 552, behavior: 'auto' })
 
     fireEvent.keyDown(window, { key: ' ' })
-    expect(scrollBy).toHaveBeenCalledTimes(2)
+    expect(scrollBy).toHaveBeenLastCalledWith({ top: 552, behavior: 'auto' })
 
     fireEvent.keyDown(window, { key: 'ArrowLeft' })
-    expect(scrollBy).toHaveBeenCalledTimes(3)
+    expect(scrollBy).toHaveBeenLastCalledWith({ top: -552, behavior: 'auto' })
+
+    // 这两个键原先压根没接进 switch，实测 Δ 0
+    fireEvent.keyDown(window, { key: 'ArrowDown' })
+    expect(scrollBy).toHaveBeenLastCalledWith({ top: 552, behavior: 'auto' })
+
+    fireEvent.keyDown(window, { key: 'ArrowUp' })
+    expect(scrollBy).toHaveBeenLastCalledWith({ top: -552, behavior: 'auto' })
+
+    expect(scrollBy).toHaveBeenCalledTimes(5)
   })
 
   it('有进度时打开书，显示「已回到上次阅读位置」提示', async () => {

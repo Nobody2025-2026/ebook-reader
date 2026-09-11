@@ -981,13 +981,17 @@ export function Reader({ bookId, onExit }: Props) {
       if (tocOpen || settingsOpen) return
 
       switch (e.key) {
+        // ↓/↑ 与 ←/→ 同义（Thorium 的约定：方向键 = 翻页单位）。
+        // 原先只接了左右，用户下意识按上下键毫无反应，看着像"软件坏了"。
         case 'ArrowRight':
+        case 'ArrowDown':
         case 'PageDown':
         case ' ':
           e.preventDefault()
           container.scrollBy({ top: page, behavior: 'auto' })
           break
         case 'ArrowLeft':
+        case 'ArrowUp':
         case 'PageUp':
           e.preventDefault()
           container.scrollBy({ top: -page, behavior: 'auto' })
@@ -1086,6 +1090,10 @@ export function Reader({ bookId, onExit }: Props) {
         <div
           className="reader-scroll"
           ref={containerRef}
+          // tabIndex=0：让正文区本身可聚焦。既补了键盘可达性（Tab 能进正文），
+          // 也让浏览器的原生滚动有落点，不再"按了没反应"。
+          tabIndex={0}
+          aria-label="正文"
           onScroll={handleScroll}
           onClick={handleContentClick}
           onMouseUp={() => openSelectionPopover()}
