@@ -97,6 +97,11 @@ export function Reader({ bookId, onExit }: Props) {
   const [bookmarks, setBookmarks] = useState<Bookmark[]>([])
   // 书签操作反馈（"已添加" / "这个位置已经有了"），2 秒后自动消失
   const [bookmarkHint, setBookmarkHint] = useState('')
+  // 当前视口位置是否已有书签 —— 顶栏「一键书签」按钮的激活态（P1-3）。
+  // 书签列表放一份 ref：handleScroll 每次滚动都要判断，但没必要把 bookmarks
+  // 写进它的依赖数组（那会让滚动回调随书签增删反复重建）。
+  const bookmarksRef = useRef<Bookmark[]>([])
+  const [atBookmark, setAtBookmark] = useState(false)
 
   // ---- 高亮与笔记（P1）----
   const [annotations, setAnnotations] = useState<Annotation[]>([])
@@ -446,6 +451,13 @@ export function Reader({ bookId, onExit }: Props) {
     const reportBlock = anchor.chapterIndex === reportChapter ? anchor.blockIndex : 0
     setPercent(pct)
     setCurrentChapter(reportChapter)
+    // 顶栏「一键书签」按钮的激活态（P1-3）。滚动高频调用，但布尔值不变时
+    // React 会跳过重渲染，不构成额外负担。
+    setAtBookmark(
+      bookmarksRef.current.some(
+        (b) => b.chapterIndex === reportChapter && b.blockIndex === reportBlock,
+      ),
+    )
 
     latestProgress.current = {
       chapterIndex: reportChapter,
@@ -739,6 +751,40 @@ export function Reader({ bookId, onExit }: Props) {
     setBookmarks(await listBookmarks(bookId))
     flashBookmarkHint(added ? '已添加书签' : '这个位置已经有书签了')
   }, [bookId, getCurrentAnchor, getBlockExcerpt, percent, flashBookmarkHint])
+
+  // 书签列表一变就同步给 ref（handleScroll 读它判断按钮激活态）
+  useEffect(() => {
+    bookmarksRef.current = bookmarks
+  }, [bookmarks])
+
+  /**
+   * 一键书签（P1-3）：单击 = 把当前位置存为书签，同一位置再点 = 取消（toggle）。
+   * 原先得「开书签面板 → 点添加当前位置」两步，入口太深；顶栏按钮与 Ctrl+B 都走这里。
+   */
+  const toggleCurrentBookmark = useCallback(async () => {
+    const anchor = getCurrentAnchor()
+    const existing = bookmarks.find(
+      (b) => b.chapterIndex === anchor.chapterIndex && b.blockIndex === anchor.blockIndex,
+    )
+    if (existing) {
+      await removeBookmark(bookId, existing.id)
+      setBookmarks(await listBookmarks(bookId))
+      setAtBookmark(false) // 立刻反映到按钮上，不必等下一次滚动
+      flashBookmarkHint('已取消这个位置的书签')
+      return
+    }
+    const added = await addBookmark(bookId, {
+      id: newBookmarkId(),
+      chapterIndex: anchor.chapterIndex,
+      blockIndex: anchor.blockIndex,
+      excerpt: getBlockExcerpt(anchor.chapterIndex, anchor.blockIndex),
+      percent,
+      createdAt: Date.now(),
+    })
+    setBookmarks(await listBookmarks(bookId))
+    setAtBookmark(true) // 同上：点了就是"这个位置有书签"（重复添加时本来也有）
+    flashBookmarkHint(added ? '已添加书签' : '这个位置已经有书签了')
+  }, [bookId, bookmarks, getCurrentAnchor, getBlockExcerpt, percent, flashBookmarkHint])
 
   const removeBm = useCallback(
     async (id: string) => {
@@ -1115,6 +1161,13 @@ export function Reader({ bookId, onExit }: Props) {
         onExit()
         return
       }
+      // Ctrl/Cmd+B：一键书签（P1-3），与顶栏按钮同一动作。
+      // 放在下面那条"面板开着就 return"之前——面板开着时也照常可用。
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'b' || e.key === 'B')) {
+        e.preventDefault()
+        void toggleCurrentBookmark()
+        return
+      }
       // 目录/排版面板开着时，方向键不应滚动正文（避免误操作）
       if (tocOpen || settingsOpen) return
 
@@ -1142,7 +1195,7 @@ export function Reader({ bookId, onExit }: Props) {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [onExit, tocOpen, settingsOpen])
+  }, [onExit, tocOpen, settingsOpen, toggleCurrentBookmark])
 
   // 离开页面前把最后的进度落盘
   useEffect(() => flushProgress, [flushProgress])
@@ -1195,6 +1248,16 @@ export function Reader({ bookId, onExit }: Props) {
           aria-expanded={settingsOpen}
         >
           排版
+        </button>
+        {/* 一键书签（P1-3）：单击把当前位置存为书签，同一位置再点取消（toggle）。
+            原先必须「开书签面板 → 点添加当前位置」两步，入口太深；现绑 Ctrl+B。 */}
+        <button
+          className={`btn btn-ghost${atBookmark ? ' is-active' : ''}`}
+          onClick={() => void toggleCurrentBookmark()}
+          title={atBookmark ? '取消当前位置的书签（Ctrl+B）' : '把当前位置加为书签（Ctrl+B）'}
+          aria-pressed={atBookmark}
+        >
+          {atBookmark ? '已书签' : '＋书签'}
         </button>
         <button
           className="btn btn-ghost"

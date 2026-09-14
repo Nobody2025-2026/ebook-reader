@@ -44,6 +44,15 @@ body {
   background: transparent;
 }
 
+/* 「一键书签」处于"当前位置已有书签"状态时的激活态（P1-3）：
+   accent 淡底 + 主色字，与周围中性 ghost 按钮区分开。
+   颜色全走变量，三套主题（含夜间提亮过的 --accent）自动跟随。 */
+.btn-ghost.is-active {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
 /* ---------- 书库 ---------- */
 .library {
   max-width: 1040px;

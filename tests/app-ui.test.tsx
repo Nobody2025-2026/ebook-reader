@@ -1109,6 +1109,27 @@ describe('书签存储', () => {
 })
 
 describe('阅读页书签', () => {
+  // P1-3：一键书签 —— 单击即存、同一位置再点即取消，不必先开面板（原先入口太深）。
+  it('顶栏「＋书签」一键添加，再点一次取消（toggle）', async () => {
+    await saveBook(meta, new File(['x'], 'book.epub'))
+    render(<Reader bookId="b1" onExit={vi.fn()} />)
+    await waitFor(() => expect(screen.getByText('c1 的正文')).toBeInTheDocument())
+
+    fireEvent.click(screen.getByRole('button', { name: '＋书签' }))
+    await waitFor(async () => expect((await listBookmarks('b1')).length).toBe(1))
+
+    // 当前位置已有书签 → 按钮切到激活态（aria-pressed 供无障碍与测试共用）
+    const onBtn = await screen.findByRole('button', { name: '已书签' })
+    expect(onBtn).toHaveAttribute('aria-pressed', 'true')
+
+    fireEvent.click(onBtn)
+    await waitFor(async () => expect((await listBookmarks('b1')).length).toBe(0))
+    await screen.findByRole('button', { name: '＋书签' })
+
+    // Ctrl+B 与顶栏按钮同一动作（P1-3 的建议里就包含"绑快捷键"）
+    fireEvent.keyDown(window, { key: 'b', ctrlKey: true })
+    await waitFor(async () => expect((await listBookmarks('b1')).length).toBe(1))
+  })
   it('点「添加当前位置」后书签出现在列表里，再点删除可移除', async () => {
     await saveBook(meta, new File(['epub-bytes'], 'book.epub'))
     const { container } = render(<Reader bookId="b1" onExit={() => {}} />)
