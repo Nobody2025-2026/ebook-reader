@@ -1,7 +1,13 @@
 // 高亮 DOM 工具测试（jsdom）：选区→锚点、applyHighlights 包裹与幂等、unwrapAll。
 // 直接对构造的 DOM 操作，不依赖 React 渲染，确定性高。
 import { describe, expect, it } from 'vitest'
-import { applyHighlights, BLOCK_SELECTOR, selectionToAnchor, unwrapAll } from '../src/lib/highlight'
+import {
+  applyHighlights,
+  BLOCK_SELECTOR,
+  isHighlightColorKey,
+  selectionToAnchor,
+  unwrapAll,
+} from '../src/lib/highlight'
 
 function mountArticle(html: string): HTMLElement {
   const art = document.createElement('article')
@@ -179,5 +185,36 @@ describe('highlight DOM', () => {
     } finally {
       document.body.removeChild(art)
     }
+  })
+
+  // P1-7：色键写 data-color（色值交给 CSS 按主题取），老数据的 rgba 仍内联。
+  // 这样同一份高亮数据在日间 / 夜间各取合适色值，不会出现"浅底 + 浅字"。
+  it('色键 → data-color；老数据的 rgba 值 → 内联背景（互不干扰）', () => {
+    const art = mountArticle('<p>abcdefghij</p><p>klmnopqrst</p>')
+    document.body.appendChild(art)
+    try {
+      applyHighlights(art, [
+        { id: '1', blockIndex: 0, startOffset: 0, endOffset: 3, color: 'red' },
+        { id: '2', blockIndex: 1, startOffset: 0, endOffset: 3, color: 'rgba(1, 2, 3, 0.5)' },
+      ])
+      const marks = art.querySelectorAll('mark.hl') as NodeListOf<HTMLElement>
+      expect(marks.length).toBe(2)
+      // 新数据：色键在 data-color 上，不内联色值
+      expect(marks[0].getAttribute('data-color')).toBe('red')
+      expect(marks[0].style.backgroundColor).toBe('')
+      // 老数据：照旧内联，样子一点不变
+      expect(marks[1].getAttribute('data-color')).toBeNull()
+      expect(marks[1].style.backgroundColor).not.toBe('')
+    } finally {
+      document.body.removeChild(art)
+    }
+  })
+
+  it('isHighlightColorKey 只认四个色键，rgba 值一律不认', () => {
+    expect(isHighlightColorKey('yellow')).toBe(true)
+    expect(isHighlightColorKey('green')).toBe(true)
+    expect(isHighlightColorKey('rgba(1, 2, 3, 0.5)')).toBe(false)
+    expect(isHighlightColorKey('')).toBe(false)
+    expect(isHighlightColorKey(undefined)).toBe(false)
   })
 })

@@ -609,6 +609,47 @@ describe('阅读器', () => {
     })
   })
 
+  // P1-7：高亮多色。确认浮层里直接选色，落库的是**色键**（具体色值由 CSS 按主题决定），
+  // 这样夜间不会出现"浅黄底 + 浅色字"看不清。
+  it('高亮可选颜色：选「疑问」后库里存的是色键 red，正文 mark 带 data-color', async () => {
+    await saveBook(meta, new File(['a'], 'book.epub'))
+    const { container } = render(<Reader bookId="b1" onExit={vi.fn()} />)
+    await waitFor(() => expect(screen.getByText('c1 的正文')).toBeInTheDocument())
+
+    const p = container.querySelector('article[data-chapter-index="0"] p') as HTMLElement
+    const range = document.createRange()
+    range.setStart(p.firstChild as Text, 0)
+    range.setEnd(p.firstChild as Text, 2) // "c1"
+    const sel = window.getSelection()!
+    sel.removeAllRanges()
+    sel.addRange(range)
+    fireEvent.mouseUp(container.querySelector('.reader-scroll') as HTMLElement)
+
+    await waitFor(() => expect(screen.getByText('加高亮')).toBeInTheDocument())
+    // 浮层里四个色块，默认选中「重点」
+    expect(screen.getByRole('button', { name: '重点' })).toHaveAttribute('aria-pressed', 'true')
+
+    fireEvent.click(screen.getByRole('button', { name: '疑问' }))
+    expect(screen.getByRole('button', { name: '疑问' })).toHaveAttribute('aria-pressed', 'true')
+
+    fireEvent.click(screen.getByText('加高亮'))
+    await waitFor(async () => {
+      const list = await listAnnotations('b1')
+      expect(list).toHaveLength(1)
+      expect(list[0].color).toBe('red')
+    })
+
+    await waitFor(() => {
+      const mark = container.querySelector(
+        'article[data-chapter-index="0"] mark.hl',
+      ) as HTMLElement
+      expect(mark).toBeTruthy()
+      expect(mark.getAttribute('data-color')).toBe('red')
+      // 色值不内联，交给 CSS + 主题
+      expect(mark.style.backgroundColor).toBe('')
+    })
+  })
+
   it('框选后点取消：不留下任何高亮', async () => {
     await saveBook(meta, new File(['a'], 'book.epub'))
     const { container } = render(<Reader bookId="b1" onExit={vi.fn()} />)

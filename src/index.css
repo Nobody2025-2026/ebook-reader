@@ -1049,7 +1049,9 @@ body {
 }
 
 /* ---------- 高亮（字符级）---------- */
-/* .chapter * 已用 !important 接管 color，所以这里只管背景色，文字仍跟随主题。 */
+/* .chapter * 已用 !important 接管 color，所以这里只管背景色，文字仍跟随主题。
+   四色按 [data-color] 取（P1-7）：同一份数据在日间 / 夜间各自用合适色值，
+   夜间不会出现"浅黄底 + 浅色字"看不清。没有 data-color 的老数据走默认那条。 */
 .chapter mark.hl {
   background: rgba(255, 224, 102, 0.6);
   color: inherit;
@@ -1058,7 +1060,42 @@ body {
   padding: 0 1px;
 }
 
-.reader.theme-night .chapter mark.hl {
+.chapter mark.hl[data-color='yellow'] {
+  background: rgba(255, 224, 102, 0.6);
+}
+
+.chapter mark.hl[data-color='red'] {
+  background: rgba(255, 138, 128, 0.5);
+}
+
+.chapter mark.hl[data-color='blue'] {
+  background: rgba(130, 190, 255, 0.5);
+}
+
+.chapter mark.hl[data-color='green'] {
+  background: rgba(150, 225, 160, 0.5);
+}
+
+/* 夜间：换成更暗、更饱和的底色 —— 深底上的浅色字才压得住 */
+.reader.theme-night .chapter mark.hl[data-color='yellow'] {
+  background: rgba(198, 158, 24, 0.45);
+}
+
+.reader.theme-night .chapter mark.hl[data-color='red'] {
+  background: rgba(200, 78, 72, 0.45);
+}
+
+.reader.theme-night .chapter mark.hl[data-color='blue'] {
+  background: rgba(62, 120, 190, 0.45);
+}
+
+.reader.theme-night .chapter mark.hl[data-color='green'] {
+  background: rgba(58, 148, 82, 0.45);
+}
+
+/* 遗留高亮（老数据把 rgba 内联在 style 上）在夜间保持原样：
+   内联色优先级高于这条，此规则只为"既无 data-color 又无内联色"的极端情况兜底。 */
+.reader.theme-night .chapter mark.hl:not([data-color]) {
   background: rgba(255, 196, 0, 0.45);
 }
 
@@ -1295,6 +1332,47 @@ body {
   overflow-y: auto;
   border-left: 3px solid var(--accent);
   padding-left: 8px;
+}
+
+/* ---- 高亮颜色选择（P1-7）---- */
+.ann-popover__colors {
+  display: flex;
+  gap: 8px;
+}
+
+.ann-color {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 2px solid transparent;
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+/* 色块用与正文一致的色值（所见即所得），比正文略实一点便于辨认 */
+.ann-color[data-color='yellow'] {
+  background: rgba(255, 224, 102, 0.95);
+}
+
+.ann-color[data-color='red'] {
+  background: rgba(255, 138, 128, 0.95);
+}
+
+.ann-color[data-color='blue'] {
+  background: rgba(130, 190, 255, 0.95);
+}
+
+.ann-color[data-color='green'] {
+  background: rgba(150, 225, 160, 0.95);
+}
+
+.ann-color.active {
+  border-color: var(--accent);
+}
+
+.ann-color:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .ann-popover__note {

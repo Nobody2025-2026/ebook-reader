@@ -196,6 +196,19 @@ export async function updateAnnotationNote(
   )
 }
 
+/** 改高亮颜色（P1-7）：只动 color，锚点与笔记原样保留 */
+export async function updateAnnotationColor(
+  bookId: string,
+  id: string,
+  color: string,
+): Promise<void> {
+  const list = (await get<Annotation[]>(KEY_ANNOTATIONS + bookId)) ?? []
+  await set(
+    KEY_ANNOTATIONS + bookId,
+    list.map((a) => (a.id === id ? { ...a, color, updatedAt: Date.now() } : a)),
+  )
+}
+
 export async function removeAnnotation(bookId: string, id: string): Promise<void> {
   const list = (await get<Annotation[]>(KEY_ANNOTATIONS + bookId)) ?? []
   await set(

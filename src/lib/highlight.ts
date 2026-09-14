@@ -19,6 +19,35 @@
 /** 与 progress.ts / Reader.tsx 的 collectBlocks 共用同一套块级选择器 */
 export const BLOCK_SELECTOR = 'p, h1, h2, h3, h4, h5, h6, li, blockquote, pre'
 
+/**
+ * 高亮可选颜色（P1-7）。
+ *
+ * 存的是**颜色键**，不是具体色值。原因：正文在日间 / 护眼 / 夜间三套主题下，
+ * 底色需要各自合适——若把 rgba 直接写进数据，夜间就会变成"浅黄底 + 浅色字"，
+ * 对比度惨不忍睹。具体色值交给 CSS 按 `[data-color]` 与主题决定（见 index.css）。
+ *
+ * 四个语义（照主流阅读器的用法）：重点黄 / 疑问红 / 待查蓝 / 喜欢绿。
+ */
+export const HIGHLIGHT_COLORS = [
+  { key: 'yellow', label: '重点' },
+  { key: 'red', label: '疑问' },
+  { key: 'blue', label: '待查' },
+  { key: 'green', label: '喜欢' },
+] as const
+
+export type HighlightColorKey = (typeof HIGHLIGHT_COLORS)[number]['key']
+
+export const DEFAULT_HIGHLIGHT_COLOR: HighlightColorKey = 'yellow'
+
+/**
+ * 这个 color 值是不是我们认识的颜色键。
+ * 老数据里存的是 rgba 字符串，会返回 false —— 调用方据此走"内联色值"的老路径，
+ * 保证已存在的高亮不会因这次改动变色或丢失。
+ */
+export function isHighlightColorKey(value?: string): value is HighlightColorKey {
+  return !!value && HIGHLIGHT_COLORS.some((c) => c.key === value)
+}
+
 /** 块内所有文本节点的字符总长（UTF-16 码元）。与 offsetWithin / locateInBlock 同一口径 */
 function blockTextLength(block: HTMLElement): number {
   const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT)
@@ -146,7 +175,12 @@ function wrapRange(
     mark.className = 'hl'
     mark.dataset.annId = annId
     if (allIds && allIds.length) mark.dataset.annIds = allIds.join(',')
-    if (color) mark.style.backgroundColor = color
+    // 颜色键交给 CSS（按 [data-color] + 当前主题取色）；老数据里存的是具体色值，
+    // 直接内联回去，保证存量高亮的样子一点不变。
+    if (color) {
+      if (isHighlightColorKey(color)) mark.dataset.color = color
+      else mark.style.backgroundColor = color
+    }
     mark.appendChild(frag)
     range.insertNode(mark)
   } catch {

@@ -24,6 +24,7 @@ import {
   removeBookmark,
   saveProgress,
   updateAnnotationNote,
+  updateAnnotationColor,
   addReadingSeconds,
   getStats,
   touchOpen,
@@ -53,7 +54,11 @@ import {
   applyHighlights,
   countSegments,
   selectionToAnchor,
+  DEFAULT_HIGHLIGHT_COLOR,
+  HIGHLIGHT_COLORS,
+  isHighlightColorKey,
   type BlockAnchor,
+  type HighlightColorKey,
 } from '../lib/highlight'
 import { extractBookTexts, searchChapters, type SearchHit } from '../lib/search'
 import {
@@ -131,6 +136,8 @@ export function Reader({ bookId, onExit }: Props) {
     }
   } | null>(null)
   const [noteDraft, setNoteDraft] = useState('')
+  // 新框选要用的高亮颜色（P1-7）。刻意保留上一次的选择——连划几处同色时不至于每次重选。
+  const [activeColor, setActiveColor] = useState<HighlightColorKey>(DEFAULT_HIGHLIGHT_COLOR)
   // 导出面板：先选再导出，避免"点了就静默下个文件、不知道导了啥"
   const [exportOpen, setExportOpen] = useState(false)
   const [exportChecked, setExportChecked] = useState<Record<string, boolean>>({})
@@ -642,6 +649,9 @@ export function Reader({ bookId, onExit }: Props) {
           excerpt: ann?.text ?? markEl.textContent ?? '',
         })
         setNoteDraft(ann?.note ?? '')
+        // 浮层里的色块要反映这条高亮当前的颜色。老数据存的是 rgba 值（不是键），
+        // 这时保持上一次的选择，不去改它本来的颜色。
+        if (isHighlightColorKey(ann?.color)) setActiveColor(ann.color)
         return
       }
 
@@ -946,14 +956,15 @@ export function Reader({ bookId, onExit }: Props) {
       endOffset: a.endOffset,
       text: a.text,
       note: note || undefined,
-      color: 'rgba(255, 224, 102, 0.6)',
+      // 颜色存"键"（yellow/red/blue/green），具体色值由 CSS 按主题决定（P1-7）
+      color: activeColor,
       createdAt: Date.now(),
     }
     const ok = await addAnnotation(bookId, ann)
     if (ok) setAnnotations((prev) => [...prev, ann])
     setActiveAnn(null)
     setToast(note ? '已添加高亮和笔记' : '已添加高亮')
-  }, [activeAnn, bookId, noteDraft])
+  }, [activeAnn, bookId, noteDraft, activeColor])
 
   /** 保存当前浮层里正在编辑的笔记（已有高亮的 view 模式） */
   const saveNote = useCallback(async () => {
@@ -963,6 +974,22 @@ export function Reader({ bookId, onExit }: Props) {
     setActiveAnn(null)
     setToast(noteDraft.trim() ? '笔记已保存' : '笔记已清空')
   }, [activeAnn, bookId, noteDraft])
+
+  /**
+   * 换高亮颜色（P1-7）。
+   * - `create` 模式：只是选色，等点「加高亮」才落库（与"显式确认"的约定一致）；
+   * - `view` 模式：立刻落库并更新内存，重画交给既有那个守卫 effect。
+   */
+  const changeActiveColor = useCallback(
+    async (color: HighlightColorKey) => {
+      setActiveColor(color)
+      if (!activeAnn || activeAnn.mode !== 'view' || !activeAnn.id) return
+      const id = activeAnn.id
+      await updateAnnotationColor(bookId, id, color)
+      setAnnotations((prev) => prev.map((a) => (a.id === id ? { ...a, color } : a)))
+    },
+    [activeAnn, bookId],
+  )
 
   /**
    * 删一条高亮。管理面板的逐条删除、批量删除、浮层里的删除都走这里，
@@ -1899,6 +1926,21 @@ export function Reader({ bookId, onExit }: Props) {
             style={{ position: 'fixed', top: activeAnn.top, left: Math.min(activeAnn.left, window.innerWidth - 320) }}
           >
             <div className="ann-popover__excerpt">{activeAnn.excerpt}</div>
+            {/* 颜色选择（P1-7）：create 时只是选色；view 时点了立刻改色 */}
+            <div className="ann-popover__colors" role="group" aria-label="高亮颜色">
+              {HIGHLIGHT_COLORS.map((c) => (
+                <button
+                  key={c.key}
+                  type="button"
+                  className={`ann-color${activeColor === c.key ? ' active' : ''}`}
+                  data-color={c.key}
+                  title={c.label}
+                  aria-label={c.label}
+                  aria-pressed={activeColor === c.key}
+                  onClick={() => void changeActiveColor(c.key)}
+                />
+              ))}
+            </div>
             <textarea
               className="ann-popover__note"
               value={noteDraft}
