@@ -5,6 +5,8 @@
 // 存"第几个段落块"不受影响——只要那段还在 DOM 里，位置就是确定的。
 // 所以书签和进度共用一套锚点，恢复逻辑也能直接复用。
 
+import { BLOCK_SELECTOR } from './highlight'
+
 export interface Bookmark {
   id: string
   chapterIndex: number
@@ -54,4 +56,46 @@ export function sortBookmarks(list: Bookmark[]): Bookmark[] {
  */
 export function newBookmarkId(): string {
   return `bm-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+}
+
+/**
+ * 正文里"这个块有书签"的标记 class（外观由 CSS 给：块左侧一条竖线）。
+ *
+ * 为什么需要它：书签原先只渲染在侧栏列表里，正文 DOM 上**没有任何痕迹**——
+ * 用户标记完往下滚，看不到自己标了哪儿，就会觉得"点了没生效"。
+ */
+export const BOOKMARK_BLOCK_CLASS = 'has-bookmark'
+
+/** 块下标去重并剔除越界项（章节内容变了 / 块数变少时，旧下标可能越界） */
+function validBlockIndexes(article: HTMLElement, blockIndexes: number[]): number[] {
+  const total = article.querySelectorAll(BLOCK_SELECTOR).length
+  return [...new Set(blockIndexes.filter((i) => i >= 0 && i < total))]
+}
+
+/**
+ * 这一章**理应**有几个块带书签标记。用于脏检查：
+ * 数量对得上就不必碰 DOM（滚动时每次渲染都会调一次）。
+ */
+export function countBookmarkMarks(article: HTMLElement, blockIndexes: number[]): number {
+  return validBlockIndexes(article, blockIndexes).length
+}
+
+/**
+ * 给书签所在的块打上 / 摘掉标记（幂等）。
+ *
+ * 与高亮同一套道理：章节内容由 dangerouslySetInnerHTML 灌进去，
+ * React 一重渲染就把我们改过的 DOM 重置掉，所以标记必须"每次渲染后补齐"，
+ * 不能只在书签变化时画一次（见 Reader.tsx 里那个故意不写依赖数组的 effect）。
+ *
+ * 只用 classList 增删，不碰文本节点、不插元素 —— 高亮那套"先拆后包"的
+ * 风险（拆完再抛异常 → 整章空白）在这里根本不存在。
+ */
+export function applyBookmarkMarks(article: HTMLElement, blockIndexes: number[]): void {
+  const blocks = Array.from(article.querySelectorAll(BLOCK_SELECTOR)) as HTMLElement[]
+  const want = new Set(blockIndexes.filter((i) => i >= 0 && i < blocks.length))
+  blocks.forEach((el, i) => {
+    const should = want.has(i)
+    if (should === el.classList.contains(BOOKMARK_BLOCK_CLASS)) return
+    el.classList.toggle(BOOKMARK_BLOCK_CLASS, should)
+  })
 }

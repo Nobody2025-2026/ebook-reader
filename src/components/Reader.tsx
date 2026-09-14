@@ -30,7 +30,14 @@ import {
   touchOpen,
   type Annotation,
 } from '../lib/storage'
-import { makeExcerpt, newBookmarkId, type Bookmark } from '../lib/bookmark'
+import {
+  BOOKMARK_BLOCK_CLASS,
+  applyBookmarkMarks,
+  countBookmarkMarks,
+  makeExcerpt,
+  newBookmarkId,
+  type Bookmark,
+} from '../lib/bookmark'
 import {
   DEFAULT_SETTINGS,
   FONT_KEYS,
@@ -70,7 +77,7 @@ import {
 import { canvasProbe, detectFontAvailability } from '../lib/fontAvailability'
 import {
   estimateChapterRemainMinutes,
-  formatRemainText,
+  formatPercentLine,
 } from '../lib/readingTime'
 
 // 块级元素选择器：覆盖小说/学术书里绝大多数情况。
@@ -184,6 +191,8 @@ export function Reader({ bookId, onExit }: Props) {
   // 高亮重绘函数的"最新引用"。跳转这类异步回调要拿到最新的闭包，
   // 直接捕获 useCallback 的旧值会用到过期的 annotations。
   const repaintHighlightsRef = useRef<(() => void) | null>(null)
+  // 书签正文标记的重绘入口（同高亮：供"滚到某处之后"主动补画）
+  const repaintBookmarkMarksRef = useRef<(() => void) | null>(null)
 
   /** @returns 这一章是否真的被加载了（重复请求 / 失败都返回 false） */
   const loadChapter = useCallback(async (index: number): Promise<boolean> => {
@@ -617,7 +626,9 @@ export function Reader({ bookId, onExit }: Props) {
   // 复用已有的累计阅读时长（`stats:` 的 totalSeconds，与计时器同口径、只算前台时间）
   // 配合当前进度倒推阅读速度，再乘"本章还剩多少字"。点击顶栏百分比可在
   // 「百分比 / 剩余时间」之间循环显示（照搬 Kindle 的做法）。
-  const [percentMode, setPercentMode] = useState<'percent' | 'remain'>('percent')
+  // 本章剩余时间（P1-2）。原先要点顶栏百分比才切出来，绝大多数人根本不知道能点，
+  // 现在改成**常驻**：百分比后面直接跟一句「· 剩约 X 分」。样本不足时为 null，
+  // 此时只显示百分比（绝不编一个数出来）。
   const [remainMinutes, setRemainMinutes] = useState<number | null>(null)
   // 累计阅读秒数放 ref：handleScroll 每次滚动都要拿它估算，但没必要进依赖数组
   const readSecondsRef = useRef(0)
@@ -833,7 +844,9 @@ export function Reader({ bookId, onExit }: Props) {
       createdAt: Date.now(),
     })
     setBookmarks(await listBookmarks(bookId))
-    flashBookmarkHint(added ? '已添加书签' : '这个位置已经有书签了')
+    // 提示里直接告诉用户"去哪儿看"——原先只回一句"已添加书签"，
+    // 用户加完不知道在哪查看，只能干瞪眼（实测反馈）。
+    flashBookmarkHint(added ? '已添加书签 · 点顶栏「书签」可查看' : '这个位置已经有书签了')
   }, [bookId, getCurrentAnchor, getBlockExcerpt, percent, flashBookmarkHint])
 
   // 书签列表一变就同步给 ref（handleScroll 读它判断按钮激活态）
@@ -867,7 +880,9 @@ export function Reader({ bookId, onExit }: Props) {
     })
     setBookmarks(await listBookmarks(bookId))
     setAtBookmark(true) // 同上：点了就是"这个位置有书签"（重复添加时本来也有）
-    flashBookmarkHint(added ? '已添加书签' : '这个位置已经有书签了')
+    // 提示里直接告诉用户"去哪儿看"——原先只回一句"已添加书签"，
+    // 用户加完不知道在哪查看，只能干瞪眼（实测反馈）。
+    flashBookmarkHint(added ? '已添加书签 · 点顶栏「书签」可查看' : '这个位置已经有书签了')
   }, [bookId, bookmarks, getCurrentAnchor, getBlockExcerpt, percent, flashBookmarkHint])
 
   const removeBm = useCallback(
@@ -1036,6 +1051,7 @@ export function Reader({ bookId, onExit }: Props) {
             block.scrollIntoView({ block: 'center', behavior: 'auto' })
           }
           repaintHighlightsRef.current?.()
+          repaintBookmarkMarksRef.current?.()
         }, delay),
       )
     },
@@ -1210,6 +1226,25 @@ export function Reader({ bookId, onExit }: Props) {
   }, [loaded, annotations])
 
   //
+  // 书签的正文标记（v0.1.6）：在书签所在块上画一条左侧竖线。
+  // 之前正文里**完全没有书签的痕迹**，用户标完往下滚就找不到自己标了哪儿。
+  // 脏检查口径与高亮一致：实际带标记的块数对得上就一个 DOM 都不碰。
+  const repaintBookmarkMarks = useCallback(() => {
+    for (const ch of loaded) {
+      const article = nodesRef.current.get(ch.index)
+      if (!article) continue
+      const idx = bookmarks.filter((b) => b.chapterIndex === ch.index).map((b) => b.blockIndex)
+      if (
+        article.querySelectorAll(`.${BOOKMARK_BLOCK_CLASS}`).length ===
+        countBookmarkMarks(article, idx)
+      ) {
+        continue
+      }
+      applyBookmarkMarks(article, idx)
+    }
+  }, [loaded, bookmarks])
+
+  //
   // ⚠️ 这个 effect **故意不写依赖数组**——每次 React 渲染后都要守一次。
   // 原因（"一滚动高亮就没了"的真因）：滚动会 setPercent 触发重渲染，
   // 章节内容是用 dangerouslySetInnerHTML 灌进去的，React 重渲染时会把
@@ -1220,7 +1255,9 @@ export function Reader({ bookId, onExit }: Props) {
   // 每次渲染后比对数量、缺了就补画，才能扛住任意次数的重渲染。
   useEffect(() => {
     repaintHighlightsRef.current = repaintHighlights
+    repaintBookmarkMarksRef.current = repaintBookmarkMarks
     repaintHighlights()
+    repaintBookmarkMarks()
   })
 
   // 点浮层外面就关掉笔记浮层。
@@ -1388,14 +1425,19 @@ export function Reader({ bookId, onExit }: Props) {
           排版
         </button>
         {/* 一键书签（P1-3）：单击把当前位置存为书签，同一位置再点取消（toggle）。
-            原先必须「开书签面板 → 点添加当前位置」两步，入口太深；现绑 Ctrl+B。 */}
+            原先必须「开书签面板 → 点添加当前位置」两步，入口太深；现绑 Ctrl+B。
+
+            ⚠️ 文案（v0.1.6 改）：这里**不能再叫「书签」**——原来它和右边那个
+            「书签 N」（打开列表）同名又相邻，用户压根分不清哪个是"加"、哪个是"看"，
+            实测反馈就是"只能加书签、没办法查看书签"。现在动词化：
+            本按钮 = 「标记」（动作），右边 = 「书签 N」（查看）。动作词与名词各占一个。 */}
         <button
           className={`btn btn-ghost${atBookmark ? ' is-active' : ''}`}
           onClick={() => void toggleCurrentBookmark()}
           title={atBookmark ? '取消当前位置的书签（Ctrl+B）' : '把当前位置加为书签（Ctrl+B）'}
           aria-pressed={atBookmark}
         >
-          {atBookmark ? '已书签' : '＋书签'}
+          {atBookmark ? '已标记' : '＋ 标记'}
         </button>
         <button
           className="btn btn-ghost"
@@ -1423,18 +1465,17 @@ export function Reader({ bookId, onExit }: Props) {
         >
           笔记{annotations.length > 0 ? ` ${annotations.length}` : ''}
         </button>
-        {/* 点击可在「百分比 / 本章剩余时间」之间循环（P1-2，照搬 Kindle 的交互）。
-            拖动进度条时显示拖动值；样本不足时剩余时间显示"估算中"，不瞎猜。
-            外观保持"一行文字"，所以用按钮但去掉边框与底色（见 CSS）。 */}
-        <button
-          className="reader-percent reader-percent--toggle"
-          onClick={() => setPercentMode((m) => (m === 'percent' ? 'remain' : 'percent'))}
-          title="点击切换：百分比 / 本章剩余时间"
-        >
-          {percentMode === 'percent'
-            ? `${(dragPercent ?? percent).toFixed(1)}%`
-            : formatRemainText(remainMinutes)}
-        </button>
+        {/* 百分比 + 本章剩余时间（P1-2；v0.1.6 改为**常驻**）。
+            原先必须点这串数字才切出剩余时间，而它长得跟纯文本一样（特意去掉了
+            按钮的边框与底色），几乎没人发现它能点 —— 实测反馈"没看到这个功能"。
+            现在两者并排显示：`62.3% · 剩约 12 分`。
+            - 拖动进度条时只显示拖动值（那会儿剩余时间算出来是错的）；
+            - 样本不足（remainMinutes 为 null）时只显示百分比，绝不编一个数。 */}
+        <span className="reader-percent" title="全书阅读进度 · 本章剩余时间">
+          {dragPercent == null
+            ? formatPercentLine(percent, remainMinutes)
+            : `${dragPercent.toFixed(1)}%`}
+        </span>
       </header>
 
       {/* 书级可拖进度条（P1-1）：拖到 x% 跳到对应章，两端是上一章 / 下一章。

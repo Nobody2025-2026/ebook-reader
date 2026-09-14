@@ -447,22 +447,9 @@ body {
   font-size: 13px;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
-}
-
-/* 顶栏百分比现在是个按钮（点击循环显示「百分比 / 本章剩余时间」，P1-2），
-   但外观要保持原来"一行文字"的样子：去掉按钮的边框、底色与内边距语义。 */
-.reader-percent--toggle {
-  border: none;
-  background: none;
-  padding: 2px 6px;
-  font: inherit;
-  font-variant-numeric: tabular-nums;
-  cursor: pointer;
+  /* v0.1.6：从"可点击切换"改成常驻文字（`62.3% · 剩约 12 分`），
+     不再换行，否则窄屏上会被拆成两行把顶栏顶高。 */
   white-space: nowrap;
-}
-
-.reader-percent--toggle:hover {
-  color: var(--fg);
 }
 
 /* 顶栏收起（点正文中间切换）。用 display:none 而不是 transform，
@@ -1058,6 +1045,27 @@ body {
   border-radius: 2px;
   cursor: pointer;
   padding: 0 1px;
+}
+
+/* 书签标记（v0.1.6）：书签所在块左侧一条竖线。
+   这是正文里"我在这儿标过书签"的唯一视觉痕迹——原先书签只存在于侧栏列表，
+   滚到标记处看不出来，用户会以为没生效。
+   用绝对定位的伪元素：不占布局，任何字号/行距/留白下都不会把文字挤动。
+   ⚠️ 不用 border-left / padding 那套（会改变块自身盒模型，li / blockquote / pre 上尤其明显）。
+   .reader-scroll 自带 20px 左右内边距，所以 -8px 永远落在可视区内，不会被裁掉。 */
+.chapter .has-bookmark {
+  position: relative;
+}
+
+.chapter .has-bookmark::before {
+  content: '';
+  position: absolute;
+  left: -8px;
+  top: 0.15em;
+  bottom: 0.15em;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--accent);
 }
 
 .chapter mark.hl[data-color='yellow'] {

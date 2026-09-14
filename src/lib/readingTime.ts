@@ -73,3 +73,19 @@ export function formatRemainText(minutes: number | null): string {
   }
   return `剩约 ${minutes} 分`
 }
+
+/**
+ * 顶栏那一行要显示的文字（v0.1.6 起剩余时间**常驻**）。
+ *
+ * 两种形态：
+ * - 能估算：`62.3% · 剩约 12 分`
+ * - 不能估算（样本太小 / 权重缺失）：只给 `62.3%` —— 绝不显示"剩余时间估算中"
+ *   这种半截话去占地方，用户看不懂还不如不写。
+ *
+ * 抽成纯函数是为了让"两种形态"都能被单测直接断言（集成测试里造不出
+ * 权重上万的真实书，跑不到能估算的分支）。
+ */
+export function formatPercentLine(percent: number, remainMinutes: number | null): string {
+  const pct = `${percent.toFixed(1)}%`
+  return remainMinutes == null ? pct : `${pct} · ${formatRemainText(remainMinutes)}`
+}

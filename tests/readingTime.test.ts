@@ -1,7 +1,7 @@
 // @vitest-environment node
 // 「本章剩余时间」估算：纯函数，不碰 DOM，跑得最快。
 import { describe, expect, it } from 'vitest'
-import { estimateChapterRemainMinutes, formatRemainText } from '../src/lib/readingTime'
+import { estimateChapterRemainMinutes, formatPercentLine, formatRemainText } from '../src/lib/readingTime'
 import type { ContentRange } from '../src/lib/progress'
 
 const rangeAll: ContentRange = { first: 0, last: 2 }
@@ -107,5 +107,20 @@ describe('formatRemainText', () => {
     expect(formatRemainText(12)).toBe('剩约 12 分')
     expect(formatRemainText(60)).toBe('剩 1 小时')
     expect(formatRemainText(75)).toBe('剩 1 时 15 分')
+  })
+})
+
+// v0.1.6：剩余时间从"点百分比才切出来"改成**常驻**跟在百分比后面。
+describe('formatPercentLine', () => {
+  it('能估算时：百分比 + 剩余时间并排', () => {
+    expect(formatPercentLine(62.34, 12)).toBe('62.3% · 剩约 12 分')
+    expect(formatPercentLine(100, 0)).toBe('100.0% · 本章读完')
+    expect(formatPercentLine(30, 75)).toBe('30.0% · 剩 1 时 15 分')
+  })
+
+  it('估不出来时只给百分比，不写"估算中"这种半截话', () => {
+    expect(formatPercentLine(0, null)).toBe('0.0%')
+    expect(formatPercentLine(62.34, null)).toBe('62.3%')
+    expect(formatPercentLine(62.34, null)).not.toContain('估算')
   })
 })

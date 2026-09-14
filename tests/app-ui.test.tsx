@@ -922,22 +922,54 @@ describe('阅读器', () => {
     }
   })
 
-  // P1-2：顶栏百分比可点击，在「百分比 / 本章剩余时间」之间循环。
-  // 新书（累计阅读时长不足 1 分钟）刻意不给数字，显示"估算中"而不是瞎猜。
-  it('点击顶栏百分比可在「百分比 / 剩余时间」间循环', async () => {
+  // P1-2；v0.1.6 改为**常驻**：原先必须点那串百分比才切出剩余时间，
+  // 而它长得跟纯文本一样（特意去掉了边框底色），几乎没人发现能点 —— 实测"没看到"。
+  // mock 书只有几十个字、也没有累计阅读时长 → 样本不足，此时刻意只显示百分比，
+  // 绝不编一个数字出来（"能估算出数字"的分支在 readingTime.test.ts 里单测）。
+  it('顶栏常驻显示百分比与剩余时间，且不再需要点击切换', async () => {
+    await saveBook(meta, new File(['x'], 'book.epub'))
+    const { container } = render(<Reader bookId="b1" onExit={vi.fn()} />)
+    await waitFor(() => expect(screen.getByText('c1 的正文')).toBeInTheDocument())
+
+    const line = container.querySelector('.reader-percent') as HTMLElement
+    expect(line).toBeTruthy()
+    // 是纯文字（span），不再是按钮 —— 没有"点一下才看得到"这回事了
+    expect(line.tagName).toBe('SPAN')
+    expect(line.textContent).toMatch(/^\d+\.\d%$/)
+    // 估不出来时不写"估算中"这种半截话
+    expect(line.textContent).not.toContain('估算')
+    expect(container.querySelector('.reader-percent--toggle')).toBeNull()
+  })
+
+  // v0.1.6：书签要在正文里看得见。原先书签只存在于侧栏列表，正文 DOM 上
+  // 毫无痕迹 —— 用户标完往下滚，找不到自己标了哪儿，就以为"点了没生效"。
+  it('加书签后正文里对应块被标出来（has-bookmark），取消后标记消失', async () => {
+    await saveBook(meta, new File(['x'], 'book.epub'))
+    const { container } = render(<Reader bookId="b1" onExit={vi.fn()} />)
+    await waitFor(() => expect(screen.getByText('c1 的正文')).toBeInTheDocument())
+
+    const article = () => container.querySelector('article[data-chapter-index="0"]') as HTMLElement
+    expect(article().querySelectorAll('.has-bookmark')).toHaveLength(0)
+
+    fireEvent.click(screen.getByRole('button', { name: '＋ 标记' }))
+    await waitFor(() => expect(article().querySelectorAll('.has-bookmark')).toHaveLength(1))
+    // 标在"当前所在块"上（jsdom 里位置恒为第一章第一个块）
+    expect((article().querySelector('.has-bookmark') as HTMLElement).tagName).toBe('P')
+
+    // 取消书签 → 标记必须跟着摘掉，不能留下幽灵竖线
+    fireEvent.click(await screen.findByRole('button', { name: '已标记' }))
+    await waitFor(() => expect(article().querySelectorAll('.has-bookmark')).toHaveLength(0))
+  })
+
+  // v0.1.6：提示里要指明"去哪儿看"。原先只回一句「已添加书签」，
+  // 用户加完找不到查看入口（实测原话："只能加书签，没办法查看书签"）。
+  it('添加书签后的提示指明查看入口', async () => {
     await saveBook(meta, new File(['x'], 'book.epub'))
     render(<Reader bookId="b1" onExit={vi.fn()} />)
     await waitFor(() => expect(screen.getByText('c1 的正文')).toBeInTheDocument())
 
-    // 初始显示百分比
-    expect(screen.getByText(/%$/)).toBeInTheDocument()
-
-    fireEvent.click(screen.getByRole('button', { name: /%$/ }))
-    expect(screen.getByText('剩余时间估算中')).toBeInTheDocument()
-
-    // 再点一次切回百分比
-    fireEvent.click(screen.getByRole('button', { name: '剩余时间估算中' }))
-    expect(screen.getByText(/%$/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '＋ 标记' }))
+    expect(await screen.findByText(/点顶栏「书签」可查看/)).toBeInTheDocument()
   })
 
   // ↓↓ P0-3：触屏手势。手机上"能看不能翻"是硬伤 —— 实测点左/右/中 scrollTop 全 Δ0
@@ -1276,21 +1308,24 @@ describe('书签存储', () => {
 
 describe('阅读页书签', () => {
   // P1-3：一键书签 —— 单击即存、同一位置再点即取消，不必先开面板（原先入口太深）。
-  it('顶栏「＋书签」一键添加，再点一次取消（toggle）', async () => {
+  // v0.1.6 改名：顶栏按钮从「＋书签」改成「＋ 标记」。原因是它和右边的
+  // 「书签 N」（打开列表）同名又相邻，用户根本分不清哪个是"加"、哪个是"看"，
+  // 实测反馈正是"只能加书签、没办法查看书签"。现在动作词与名词各占一个。
+  it('顶栏「＋ 标记」一键添加，再点一次取消（toggle）', async () => {
     await saveBook(meta, new File(['x'], 'book.epub'))
     render(<Reader bookId="b1" onExit={vi.fn()} />)
     await waitFor(() => expect(screen.getByText('c1 的正文')).toBeInTheDocument())
 
-    fireEvent.click(screen.getByRole('button', { name: '＋书签' }))
+    fireEvent.click(screen.getByRole('button', { name: '＋ 标记' }))
     await waitFor(async () => expect((await listBookmarks('b1')).length).toBe(1))
 
     // 当前位置已有书签 → 按钮切到激活态（aria-pressed 供无障碍与测试共用）
-    const onBtn = await screen.findByRole('button', { name: '已书签' })
+    const onBtn = await screen.findByRole('button', { name: '已标记' })
     expect(onBtn).toHaveAttribute('aria-pressed', 'true')
 
     fireEvent.click(onBtn)
     await waitFor(async () => expect((await listBookmarks('b1')).length).toBe(0))
-    await screen.findByRole('button', { name: '＋书签' })
+    await screen.findByRole('button', { name: '＋ 标记' })
 
     // Ctrl+B 与顶栏按钮同一动作（P1-3 的建议里就包含"绑快捷键"）
     fireEvent.keyDown(window, { key: 'b', ctrlKey: true })
