@@ -57,7 +57,7 @@ await page.locator('.reader-scroll').waitFor({ timeout: 60_000 })
 await sleep(2500)
 
 // ---------- ① 页边距 ----------
-console.log('\n=== ① 页边距滑块（当前实现：.chapter 的 max-width）===')
+console.log('\n=== ① 页边距滑块（当前实现：.chapter 的左右 padding，见 266e80e）===')
 await page.getByRole('button', { name: '排版' }).click()
 await sleep(500)
 
