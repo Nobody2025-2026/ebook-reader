@@ -774,6 +774,47 @@ describe('阅读器', () => {
     expect(scrollBy).toHaveBeenCalledTimes(5)
   })
 
+  // P1-4：标准快捷键（约定照抄 Thorium）。Ctrl+B 书签见「阅读页书签」一节，
+  // 这里覆盖其余五个：Ctrl+F 搜索、Ctrl+Home/End 首尾、Ctrl+PageUp/PageDown 切章。
+  it('Ctrl+F 开关搜索、Ctrl+End 跳到书尾，且输入框里按键不与快捷键打架', async () => {
+    await saveBook(meta, new File(['x'], 'book.epub'))
+    const { container } = render(<Reader bookId="b1" onExit={vi.fn()} />)
+    await waitFor(() => expect(screen.getByText('c1 的正文')).toBeInTheDocument())
+
+    // Ctrl+F 打开搜索面板，再按一次收起（toggle）
+    fireEvent.keyDown(window, { key: 'f', ctrlKey: true })
+    await waitFor(() => expect(screen.getByText('搜索本书')).toBeInTheDocument())
+    fireEvent.keyDown(window, { key: 'f', ctrlKey: true })
+    await waitFor(() => expect(screen.queryByText('搜索本书')).toBeNull())
+
+    // Ctrl+End 跳到书尾。jsdom 里 scrollIntoView 不存在，临时打桩记录被滚到的元素。
+    // 三章权重相同 → 正文区间是 0..2，书尾即 data-chapter-index="2" 那一章。
+    const scrolled: Element[] = []
+    const origScrollIntoView = Element.prototype.scrollIntoView
+    Element.prototype.scrollIntoView = function (this: Element) {
+      scrolled.push(this)
+    } as typeof Element.prototype.scrollIntoView
+    try {
+      fireEvent.keyDown(window, { key: 'End', ctrlKey: true })
+      await waitFor(() =>
+        expect(scrolled.some((el) => el.getAttribute('data-chapter-index') === '2')).toBe(true),
+      )
+    } finally {
+      Element.prototype.scrollIntoView = origScrollIntoView
+    }
+
+    // 焦点在搜索框里时，方向键 / Home / End 有自己的语义（移光标），不能被抢去翻正文
+    const scroller = container.querySelector('.reader-scroll') as HTMLElement
+    Object.defineProperty(scroller, 'clientHeight', { value: 600, configurable: true })
+    const scrollBy = vi.fn()
+    scroller.scrollBy = scrollBy as unknown as typeof scroller.scrollBy
+    fireEvent.keyDown(window, { key: 'f', ctrlKey: true })
+    const input = await screen.findByRole('searchbox')
+    fireEvent.keyDown(input, { key: 'ArrowDown' })
+    fireEvent.keyDown(input, { key: 'Home' })
+    expect(scrollBy).not.toHaveBeenCalled()
+  })
+
   // ↓↓ P0-3：触屏手势。手机上"能看不能翻"是硬伤 —— 实测点左/右/中 scrollTop 全 Δ0
   describe('触屏手势（点按翻屏 / 滑动翻屏 / 点中间收起顶栏）', () => {
     /** jsdom 没有 TouchEvent，手动造一个带 changedTouches 的可冒泡事件喂给 React */

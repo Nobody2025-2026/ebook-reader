@@ -542,6 +542,23 @@ export function Reader({ bookId, onExit }: Props) {
   )
 
   /**
+   * 上一章 / 下一章（P1-1 进度条两端与 P1-4 的 Ctrl+PageUp/PageDown 共用）。
+   * 以「最近正文位置」为基准，并把目标夹回正文区间——脏 EPUB 的封面 / 目录 /
+   * nav 页不该成为跳转目标，否则用户会停在只有一串链接的页面上。
+   */
+  const goAdjacentChapter = useCallback(
+    (delta: number) => {
+      if (!chaptersRef.current.length) return
+      const range = contentRangeRef.current
+      const base = Math.min(Math.max(currentChapter, range.first), range.last)
+      const target = Math.min(Math.max(base + delta, range.first), range.last)
+      if (target === base) return
+      void jumpTo(target)
+    },
+    [currentChapter, jumpTo],
+  )
+
+  /**
    * 正文里的 <a> 统一在容器上做事件委托：书内脚注 / 目录锚点自己跳转，
    * 外链新标签打开。
    *
@@ -1161,13 +1178,50 @@ export function Reader({ bookId, onExit }: Props) {
         onExit()
         return
       }
+
+      // 焦点在输入框 / 文本域里（搜索框、笔记框）时一律让路：那里的 Home/End/方向键
+      // 有自己的语义（移动光标），抢过来只会让用户打字出错。
+      const el = e.target as HTMLElement | null
+      if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) {
+        return
+      }
+
+      const mod = e.ctrlKey || e.metaKey
       // Ctrl/Cmd+B：一键书签（P1-3），与顶栏按钮同一动作。
       // 放在下面那条"面板开着就 return"之前——面板开着时也照常可用。
-      if ((e.ctrlKey || e.metaKey) && (e.key === 'b' || e.key === 'B')) {
+      if (mod && (e.key === 'b' || e.key === 'B')) {
         e.preventDefault()
         void toggleCurrentBookmark()
         return
       }
+
+      // ---- 标准快捷键（P1-4，约定照抄 Thorium）----
+      if (mod && (e.key === 'f' || e.key === 'F')) {
+        e.preventDefault()
+        togglePanel('search')
+        return
+      }
+      if (mod && e.key === 'Home') {
+        e.preventDefault()
+        void jumpTo(contentRangeRef.current.first)
+        return
+      }
+      if (mod && e.key === 'End') {
+        e.preventDefault()
+        void jumpTo(contentRangeRef.current.last)
+        return
+      }
+      if (mod && e.key === 'PageUp') {
+        e.preventDefault()
+        goAdjacentChapter(-1)
+        return
+      }
+      if (mod && e.key === 'PageDown') {
+        e.preventDefault()
+        goAdjacentChapter(1)
+        return
+      }
+
       // 目录/排版面板开着时，方向键不应滚动正文（避免误操作）
       if (tocOpen || settingsOpen) return
 
@@ -1195,7 +1249,7 @@ export function Reader({ bookId, onExit }: Props) {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [onExit, tocOpen, settingsOpen, toggleCurrentBookmark])
+  }, [onExit, tocOpen, settingsOpen, toggleCurrentBookmark, togglePanel, jumpTo, goAdjacentChapter])
 
   // 离开页面前把最后的进度落盘
   useEffect(() => flushProgress, [flushProgress])
