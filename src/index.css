@@ -413,6 +413,32 @@ body {
   display: none;
 }
 
+/* 书级可拖进度条（P1-1）：顶栏下方独立一行——上一章 / 滑条 / 下一章。
+   不塞进顶栏是因为手机上顶栏要横向滑动，滑条跟着滑走没法用。 */
+.reader-progressbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 16px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.reader-progressbar .btn {
+  flex: none;
+}
+
+.progress-slider {
+  flex: 1;
+  min-width: 0;
+  accent-color: var(--accent);
+}
+
+/* 与顶栏一起收起：否则手机点中间收起顶栏后，这一行还占着正文高度 */
+.reader.is-chrome-hidden .reader-progressbar {
+  display: none;
+}
+
 .reader-scroll {
   flex: 1;
   overflow-y: auto;

@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import { openEpub, type ChapterRef, type OpenedBook, type TocEntry } from '../lib/epub'
 import {
+  chapterFromPercent,
   computeWeightedPercent,
   detectContentRange,
   findAnchorBlock,
@@ -557,6 +558,31 @@ export function Reader({ bookId, onExit }: Props) {
     },
     [currentChapter, jumpTo],
   )
+
+  // ---- 书级可拖进度条（P1-1）----
+  //
+  // 之前全屏唯一的位置反馈是顶栏一个百分比，厚书想跳到某处只能一路滚。
+  // 注意：**不能用 .reader-scroll 的原生滚动条顶替**——它只覆盖"已加载的章节"，
+  // 拖到 100% 不是读到书末，而是触发加载下一章（scrollHeight 会突然翻几十倍、
+  // 拇指从 100% 缩回 1.5%，看起来像"进度倒退"）。
+  // 所以这里是一条按章节折算的**书级**滑条：拖到 x% → jumpTo(对应章)。
+  // 拖动过程中只更新视觉（数字 + 滑条），松手才真正跳章 —— 每移一格都 jumpTo
+  // 会在厚书上疯狂加载章节。
+  const [dragPercent, setDragPercent] = useState<number | null>(null)
+  const dragPercentRef = useRef<number | null>(null)
+
+  const onProgressDrag = useCallback((value: number) => {
+    dragPercentRef.current = value
+    setDragPercent(value)
+  }, [])
+
+  const commitProgressDrag = useCallback(() => {
+    const target = dragPercentRef.current
+    if (target == null) return
+    dragPercentRef.current = null
+    setDragPercent(null)
+    void jumpTo(chapterFromPercent(target, weightsRef.current, contentRangeRef.current))
+  }, [jumpTo])
 
   /**
    * 正文里的 <a> 统一在容器上做事件委托：书内脚注 / 目录锚点自己跳转，
@@ -1339,8 +1365,44 @@ export function Reader({ bookId, onExit }: Props) {
         >
           笔记{annotations.length > 0 ? ` ${annotations.length}` : ''}
         </button>
-        <span className="reader-percent">{percent.toFixed(1)}%</span>
+        {/* 拖动中显示的是拖动值，松手后回到真实进度 */}
+        <span className="reader-percent">{(dragPercent ?? percent).toFixed(1)}%</span>
       </header>
+
+      {/* 书级可拖进度条（P1-1）：拖到 x% 跳到对应章，两端是上一章 / 下一章。
+          它与顶栏同属"外壳"，手机点正文中间收起顶栏时一并隐藏。 */}
+      <div className="reader-progressbar">
+        <button
+          className="btn btn-ghost"
+          onClick={() => goAdjacentChapter(-1)}
+          title="上一章（Ctrl+PageUp）"
+        >
+          上一章
+        </button>
+        <input
+          type="range"
+          className="progress-slider"
+          min={0}
+          max={1000}
+          step={1}
+          value={Math.round((dragPercent ?? percent) * 10)}
+          onChange={(e) => onProgressDrag(Number(e.target.value) / 10)}
+          // 松手才真正跳章：鼠标 / 触屏 / 键盘各挂一种，覆盖三类输入
+          onPointerUp={commitProgressDrag}
+          onTouchEnd={commitProgressDrag}
+          onKeyUp={commitProgressDrag}
+          onBlur={commitProgressDrag}
+          aria-label="阅读进度"
+          aria-valuetext={`${(dragPercent ?? percent).toFixed(1)}%`}
+        />
+        <button
+          className="btn btn-ghost"
+          onClick={() => goAdjacentChapter(1)}
+          title="下一章（Ctrl+PageDown）"
+        >
+          下一章
+        </button>
+      </div>
 
       <div className="reader-body">
         <div

@@ -3,6 +3,7 @@
 import { describe, expect, it } from 'vitest'
 import { lazyLoadImages, prepareChapterHtml, sanitizeChapterHtml } from '../src/lib/sanitize'
 import {
+  chapterFromPercent,
   computePercent,
   computeWeightedPercent,
   detectContentRange,
@@ -173,6 +174,49 @@ describe('computeWeightedPercent', () => {
   it('章内比例被夹到 0~1，结果夹在 0~100', () => {
     expect(computeWeightedPercent(3, 2, strategyBook)).toBe(100)
     expect(computeWeightedPercent(0, -1, strategyBook)).toBe(0)
+  })
+})
+
+// 「可拖进度条」（P1-1）的反解：拖到 x% 该跳到第几章。
+// 与正向函数必须同源，否则会出现"拖到 50%、跳过去、读回来 3%"这种漂移。
+describe('chapterFromPercent', () => {
+  const strategyBook = [0, 1361, 250637, 13113] // 《策略思维》：正文全塞在第 2 章
+  const strRange = detectContentRange(strategyBook) // { first: 2, last: 3 }
+
+  it('0% / 100% 分别落在正文区间的首章 / 末章', () => {
+    expect(chapterFromPercent(0, strategyBook, strRange)).toBe(2)
+    expect(chapterFromPercent(100, strategyBook, strRange)).toBe(3)
+  })
+
+  it('永远不会拖到正文区间之外的封面 / 目录页上', () => {
+    expect(chapterFromPercent(0.1, strategyBook, strRange)).toBe(2)
+    expect(chapterFromPercent(99.9, strategyBook, strRange)).toBe(3)
+  })
+
+  it('与正向函数同源：反解只到章首，读回来必定 ≤ 拖动值，且结果稳定不漂', () => {
+    for (const pct of [1, 10, 48, 90, 99]) {
+      const ch = chapterFromPercent(pct, strategyBook, strRange)
+      const back = computeWeightedPercent(ch, 0, strategyBook, strRange)
+      expect(back).toBeLessThanOrEqual(pct + 1e-6)
+      expect(chapterFromPercent(pct, strategyBook, strRange)).toBe(ch)
+    }
+  })
+
+  it('均匀权重下 50% 落在中间章', () => {
+    const even = [100, 100, 100, 100]
+    expect(chapterFromPercent(0, even)).toBe(0)
+    expect(chapterFromPercent(50, even)).toBe(2)
+    expect(chapterFromPercent(100, even)).toBe(3)
+  })
+
+  it('权重全 0（解压失败）时按章等分兜底，且不越出正文区间', () => {
+    expect(chapterFromPercent(50, [0, 0, 0, 0])).toBe(2)
+    expect(chapterFromPercent(0, [0, 0, 0, 0], { first: 1, last: 2 })).toBe(1)
+    expect(chapterFromPercent(99, [0, 0, 0, 0], { first: 1, last: 2 })).toBe(2)
+  })
+
+  it('空权重表返回 0，不炸', () => {
+    expect(chapterFromPercent(50, [])).toBe(0)
   })
 })
 

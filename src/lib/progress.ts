@@ -189,3 +189,45 @@ export function computeWeightedPercent(
   const within = weights[chapterIndex] * Math.min(Math.max(withinRatio, 0), 1)
   return Math.min(Math.max(((before + within) / contentTotal) * 100, 0), 100)
 }
+
+/**
+ * `computeWeightedPercent` 的反解：给定一个百分比，回答「该跳到第几章」。
+ *
+ * 供「可拖进度条」用（P1-1）。与正向函数同源，保证"拖到 x% → 跳过去 → 读回来
+ * 仍是 ~x%"，不会来回漂。章内位置不反解（拖到章中间就落在章首）——这符合
+ * 主流阅读器拖进度条的行为，且比"像素反推块序号"稳得多。
+ */
+export function chapterFromPercent(
+  percent: number,
+  weights: number[],
+  contentRange?: ContentRange,
+): number {
+  if (weights.length === 0) return 0
+  const range =
+    contentRange && contentRange.last >= contentRange.first
+      ? contentRange
+      : { first: 0, last: weights.length - 1 }
+
+  if (percent <= 0) return range.first
+  if (percent >= 100) return range.last
+
+  const contentTotal = weights
+    .slice(range.first, range.last + 1)
+    .reduce((sum, w) => sum + w, 0)
+
+  // 权重全 0（解压失败等）：退化成按章等分，与正向函数的兜底同口径
+  if (contentTotal <= 0) {
+    const span = range.last - range.first + 1
+    const idx = range.first + Math.floor((percent / 100) * span)
+    return Math.min(Math.max(idx, range.first), range.last)
+  }
+
+  const target = (percent / 100) * contentTotal
+  let acc = 0
+  for (let i = range.first; i <= range.last; i++) {
+    acc += weights[i]
+    // 落在 [acc - w, acc) 区间内即第 i 章；末章兜住右端点
+    if (target < acc || i === range.last) return i
+  }
+  return range.last
+}

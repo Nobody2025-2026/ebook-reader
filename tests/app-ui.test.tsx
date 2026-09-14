@@ -815,6 +815,35 @@ describe('阅读器', () => {
     expect(scrollBy).not.toHaveBeenCalled()
   })
 
+  // P1-1：书级可拖进度条。关键在"拖动中只改视觉、松手才跳章"——
+  // 每移动一格就 jumpTo 会在厚书上疯狂加载章节。也不能用原生滚动条顶替：
+  // 它只覆盖已加载章节，拖到 100% 是"加载下一章"而不是"到书末"。
+  it('拖动进度条：拖动中不跳章，松手后跳到对应章', async () => {
+    await saveBook(meta, new File(['x'], 'book.epub'))
+    render(<Reader bookId="b1" onExit={vi.fn()} />)
+    await waitFor(() => expect(screen.getByText('c1 的正文')).toBeInTheDocument())
+
+    const slider = screen.getByRole('slider', { name: '阅读进度' })
+    // 三章等权重（正文区间 0..2），拖到底 = 第 3 章（index 2）
+    const scrolled: Element[] = []
+    const origScrollIntoView = Element.prototype.scrollIntoView
+    Element.prototype.scrollIntoView = function (this: Element) {
+      scrolled.push(this)
+    } as typeof Element.prototype.scrollIntoView
+    try {
+      fireEvent.change(slider, { target: { value: '1000' } })
+      // 只拖不松手：一次跳章都不该发生
+      expect(scrolled).toHaveLength(0)
+
+      fireEvent.pointerUp(slider)
+      await waitFor(() =>
+        expect(scrolled.some((el) => el.getAttribute('data-chapter-index') === '2')).toBe(true),
+      )
+    } finally {
+      Element.prototype.scrollIntoView = origScrollIntoView
+    }
+  })
+
   // ↓↓ P0-3：触屏手势。手机上"能看不能翻"是硬伤 —— 实测点左/右/中 scrollTop 全 Δ0
   describe('触屏手势（点按翻屏 / 滑动翻屏 / 点中间收起顶栏）', () => {
     /** jsdom 没有 TouchEvent，手动造一个带 changedTouches 的可冒泡事件喂给 React */
