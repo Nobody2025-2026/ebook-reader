@@ -1212,11 +1212,13 @@ export function Reader({ bookId, onExit }: Props) {
         >
           搜索
         </button>
+        {/* 不再在"零笔记"时禁用。原先 disabled={annotations.length === 0} 的后果是：
+            新用户从未用过这个功能，也就永远看不到入口存在 —— 功能不可发现。
+            所有"新功能入口"都不该在用户用过之前隐藏；空态里给一句引导即可。 */}
         <button
           className="btn btn-ghost"
           onClick={openExportPanel}
           title="管理高亮与笔记：勾选后可导出或删除"
-          disabled={annotations.length === 0}
         >
           笔记{annotations.length > 0 ? ` ${annotations.length}` : ''}
         </button>
@@ -1598,7 +1600,10 @@ export function Reader({ bookId, onExit }: Props) {
             </div>
             <div className="search-list">
               {annotations.length === 0 ? (
-                <p className="search-empty">还没有高亮。</p>
+                <p className="search-empty">
+                  还没有高亮。在正文里选中一段文字，点浮层里的「加高亮」就有了；
+                  之后随时回到这里导出或删除。
+                </p>
               ) : (
                 annotations.map((a) => (
                   <div key={a.id} className="export-item">

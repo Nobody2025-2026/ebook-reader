@@ -596,6 +596,21 @@ describe('阅读器', () => {
     expect(container.querySelector('mark.hl')).toBeNull()
   })
 
+  // P1-5：入口不该在"用户用过之前"就隐藏 —— 新用户根本看不到这个功能存在。
+  it('一条笔记都没有时，「笔记」入口仍可点开并给出操作引导', async () => {
+    await saveBook(meta, new File(['x'], 'book.epub'))
+    render(<Reader bookId="b1" onExit={vi.fn()} />)
+    await waitFor(() => expect(screen.getByText('c1 的正文')).toBeInTheDocument())
+
+    const notesBtn = screen.getByRole('button', { name: /^笔记/ })
+    expect(notesBtn).not.toBeDisabled()
+
+    fireEvent.click(notesBtn)
+    await waitFor(() => expect(screen.getByText('高亮与笔记管理')).toBeInTheDocument())
+    // 空态要教用户怎么用，而不是只汇报"还没有高亮"
+    expect(screen.getByText(/选中一段文字/)).toBeInTheDocument()
+  })
+
   it('笔记管理面板可以逐条删除高亮', async () => {
     await saveBook(meta, new File(['a'], 'book.epub'))
     const { container } = render(<Reader bookId="b1" onExit={vi.fn()} />)
