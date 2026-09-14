@@ -14,11 +14,15 @@ import {
   FONT_KEYS,
   FONT_PROBE_FAMILIES,
   FONT_STACKS,
+  MARGIN_CAP_VW,
   PAGE_MARGIN_MAX,
+  PAGE_MARGIN_STEP,
   contentWidthFactor,
   customFontValue,
+  effectivePageMargin,
   fontStack,
   loadSettings,
+  pageMarginCapPx,
 } from '../src/lib/settings'
 
 const mockedGet = get as ReturnType<typeof vi.fn>
@@ -214,5 +218,75 @@ describe('contentWidthFactor（栏宽系数）', () => {
       prev = t
     }
     expect(prev).toBe(1)
+  })
+})
+
+// 留白的「屏宽封顶」：留白是绝对 px（0–120），在 320px 屏上占 37.5%、1440px 上只占
+// 8.3% —— 同一个值语义失衡。真机实测 320px 屏留白 120 → 正文只剩 52px（一行 2 字）。
+// 封顶比例 12% 的妙处：1440px 下 12vw = 172px > 上限 120，桌面行为一点不变。
+describe('pageMarginCapPx（留白按屏宽封顶）', () => {
+  it('宽屏不封顶：12% 已超过 PAGE_MARGIN_MAX，回落到上限', () => {
+    // 1440 × 12% = 172.8 > 120
+    expect(pageMarginCapPx(1440)).toBe(PAGE_MARGIN_MAX)
+    expect(pageMarginCapPx(2560)).toBe(PAGE_MARGIN_MAX)
+    expect(pageMarginCapPx(1024)).toBe(PAGE_MARGIN_MAX) // 122.88 → 120
+  })
+
+  it('窄屏按 12% 收，且对齐到滑块步长（不会算出网格外的 max）', () => {
+    // 390 × 12% = 46.8 → 向下取到 4 的倍数 = 44
+    const cap390 = pageMarginCapPx(390)
+    expect(cap390).toBe(44)
+    expect(cap390 % PAGE_MARGIN_STEP).toBe(0)
+    // 320 × 12% = 38.4 → 36
+    expect(pageMarginCapPx(320)).toBe(36)
+    expect(pageMarginCapPx(320) % PAGE_MARGIN_STEP).toBe(0)
+  })
+
+  it('封顶后再窄也留得下正文：每档每侧留白 ≤ 屏宽 12%', () => {
+    for (const w of [280, 320, 360, 390, 430, 768, 844]) {
+      const cap = pageMarginCapPx(w)
+      expect(cap).toBeLessThanOrEqual((w * MARGIN_CAP_VW) / 100)
+      // 正文盒 = 屏宽 − reader-scroll 内边距(14×2) − 两侧留白 ≥ 180px（一行 10 汉字）
+      expect(w - 28 - cap * 2).toBeGreaterThanOrEqual(180)
+    }
+  })
+
+  it('视口宽非法时不限制（宁可少限制，也别算出 0 变成死滑块）', () => {
+    for (const bad of [0, -100, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(pageMarginCapPx(bad)).toBe(PAGE_MARGIN_MAX)
+    }
+  })
+})
+
+describe('effectivePageMargin（实际生效留白）', () => {
+  it('设置值低于封顶 → 原样', () => {
+    expect(effectivePageMargin(0, 390)).toBe(0)
+    expect(effectivePageMargin(20, 390)).toBe(20)
+    expect(effectivePageMargin(44, 390)).toBe(44)
+  })
+
+  it('设置值高于封顶 → 夹到封顶（手机上拖到 120 也只生效 44）', () => {
+    expect(effectivePageMargin(120, 390)).toBe(44)
+    expect(effectivePageMargin(PAGE_MARGIN_MAX, 320)).toBe(36)
+  })
+
+  it('宽屏下与设置值一致（封顶不起作用，桌面观感不变）', () => {
+    expect(effectivePageMargin(120, 1440)).toBe(120)
+    expect(effectivePageMargin(80, 1512)).toBe(80)
+  })
+
+  it('非法设置值先走 normalize，再封顶', () => {
+    expect(effectivePageMargin(Number.NaN, 390)).toBe(DEFAULT_SETTINGS.pageMargin)
+    expect(effectivePageMargin(-30, 390)).toBe(0)
+  })
+
+  it('单调：视口越宽，生效留白只会更大或不变', () => {
+    let prev = effectivePageMargin(120, 200)
+    for (const w of [240, 280, 320, 390, 480, 768, 1024, 1440]) {
+      const cur = effectivePageMargin(120, w)
+      expect(cur).toBeGreaterThanOrEqual(prev)
+      prev = cur
+    }
+    expect(prev).toBe(120)
   })
 })

@@ -56,6 +56,37 @@ export function contentWidthFactor(pageMargin: number): number {
   return Math.min(1, normalizePageMargin(pageMargin) / DEFAULT_SETTINGS.pageMargin)
 }
 
+// 滑块的步长（见 Reader 里 pageMargin 的 range）。留白上限也按它对齐，
+// 否则 max 落在网格之外时 value 与 max 会互相打架（同一滑块显示 47 却存 44）。
+export const PAGE_MARGIN_STEP = 4
+
+// 留白的「屏宽封顶比例」：每侧留白不超过屏宽的 12%。
+// ⚠️ CSS 里 `.chapter` 的 `min(..., 12vw)` 与它同步，改这里要一起改。
+//
+// 为什么必须有：留白是**绝对 px**（0–120），在 1440px 屏上占 8.3%、在 320px 屏上
+// 占 37.5%——同一个值语义完全失衡。真机实测 320px 屏留白 120 → 正文只剩 52px
+// （一行 2 个字）。12% 这个比例的妙处是两端都不吃亏：
+//   · 1440px 宽屏 → 12vw = 172px > 上限 120，**桌面行为一点不变**；
+//   · 390px 手机   → 封顶 44px，正文仍有 ~274px（一行 15 字），读得下去。
+export const MARGIN_CAP_VW = 12
+
+/** 屏宽对应的留白上限（px）：约 `视口宽 × 12%`，向下对齐到滑块步长，且不超过
+ *  PAGE_MARGIN_MAX。
+ *  视口宽非法（0 / NaN / 负数，如未挂载、SSR）时**退回 PAGE_MARGIN_MAX**——
+ *  宁可少限制一次，也别算出 0 把滑块变成拖不动的死控件。 */
+export function pageMarginCapPx(viewportWidth: number): number {
+  if (!Number.isFinite(viewportWidth) || viewportWidth <= 0) return PAGE_MARGIN_MAX
+  const raw = Math.min(PAGE_MARGIN_MAX, (viewportWidth * MARGIN_CAP_VW) / 100)
+  return Math.max(0, Math.floor(raw / PAGE_MARGIN_STEP) * PAGE_MARGIN_STEP)
+}
+
+/** 实际生效的留白 = min(用户设置, 屏宽封顶)。
+ *  滑块的 max/value 与注入的 CSS 变量都用它——否则会出现"滑块能拖到 120、
+ *  屏幕其实只认 44"的半段无效（那正是本项目被吐槽过的"死滑块"老毛病）。 */
+export function effectivePageMargin(pageMargin: number, viewportWidth: number): number {
+  return Math.min(normalizePageMargin(pageMargin), pageMarginCapPx(viewportWidth))
+}
+
 export const DEFAULT_SETTINGS: ReaderSettings = {
   fontSize: 18,
   lineHeight: 1.9,

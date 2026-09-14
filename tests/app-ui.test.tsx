@@ -41,7 +41,7 @@ import {
   saveProgress,
   type BookMeta,
 } from '../src/lib/storage'
-import { PAGE_MARGIN_MAX } from '../src/lib/settings'
+import { PAGE_MARGIN_MAX, pageMarginCapPx } from '../src/lib/settings'
 
 const { openEpubMock, mockBook, furnitureBook, divOnlyBook, linkBook } = vi.hoisted(() => {
   const openEpubMock = vi.fn()
@@ -1147,6 +1147,47 @@ describe('阅读器', () => {
         expect(scroller.style.getPropertyValue('--reader-page-margin')).toBe('0px')
         expect(scroller.style.getPropertyValue('--reader-content-t')).toBe('0')
       })
+    })
+
+    it('窄屏下留白按屏宽封顶：滑块上限与注入值一起收，转屏后放开', async () => {
+      // jsdom 默认 1024×768，这里手动模拟手机竖屏。
+      const originalWidth = window.innerWidth
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: 390 })
+      try {
+        await renderReader()
+        fireEvent.click(screen.getByRole('button', { name: '排版' }))
+
+        const slider = (await screen.findByLabelText('页边距')) as HTMLInputElement
+        const scroller = find('.reader-scroll') as HTMLElement
+        const phoneCap = pageMarginCapPx(390)
+
+        // 手机上上限被屏宽压到 12% 以内 —— 若仍是 120，滑块右半段全是"拖了没反应"的
+        // 死区（屏幕只认 44px，却让用户拖到 120），正是本项目被吐槽过的老毛病。
+        expect(phoneCap).toBeLessThan(PAGE_MARGIN_MAX)
+        expect(Number(slider.max)).toBe(phoneCap)
+        // 默认留白 20 没到上限，不受影响
+        expect(scroller.style.getPropertyValue('--reader-page-margin')).toBe('20px')
+
+        // 拖到最右：无论 jsdom 是否把 value 夹到 max，写入与生效都不得超过上限
+        fireEvent.change(slider, { target: { value: String(PAGE_MARGIN_MAX) } })
+        await waitFor(() =>
+          expect(scroller.style.getPropertyValue('--reader-page-margin')).toBe(`${phoneCap}px`),
+        )
+
+        // 转屏 / 放大窗口：封顶跟着放宽，原本存不下的 120 现在能生效
+        Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1440 })
+        fireEvent(window, new Event('resize'))
+        await waitFor(() => expect(Number(slider.max)).toBe(PAGE_MARGIN_MAX))
+
+        fireEvent.change(slider, { target: { value: String(PAGE_MARGIN_MAX) } })
+        await waitFor(() =>
+          expect(scroller.style.getPropertyValue('--reader-page-margin')).toBe(
+            `${PAGE_MARGIN_MAX}px`,
+          ),
+        )
+      } finally {
+        Object.defineProperty(window, 'innerWidth', { configurable: true, value: originalWidth })
+      }
     })
 
     it('切到夜间主题：.reader 挂上 theme-night（整套调色板靠它翻转）', async () => {

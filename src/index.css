@@ -496,8 +496,11 @@ body {
   -webkit-overflow-scrolling: touch;
 }
 
-/* 手机：顶栏 7 个按钮必然挤爆一行，让它横向可滑；按钮加大到 44px 触控区 */
-@media (max-width: 720px) {
+/* 手机：顶栏 7 个按钮必然挤爆一行，让它横向可滑；按钮加大到 44px 触控区。
+   断点不能只看宽度：手机横屏是 844×390，"宽 > 720 但矮得可怜"，
+   只按宽度判会掉回桌面布局（顶栏不横滑、面板并排挤）。所以补一条
+   "矮 + 不超平板"——加 max-width:1024px 是防止把桌面的矮窗口也一起卷进来。 */
+@media (max-width: 720px), (max-height: 500px) and (max-width: 1024px) {
   .reader-bar {
     gap: 8px;
     padding: 6px 10px;
@@ -546,9 +549,20 @@ body {
       var(--reader-content-max, 760px)
   );
   margin: 0 auto;
+  /* 上一行是"不支持 min() 的老浏览器"的兜底（Safari < 13.1）——不能只留下面那条，
+     否则老浏览器会整条 padding 声明失效，正文直接贴边。 */
   padding: 32px var(--reader-page-margin, 20px);
+  /* 留白按屏宽封顶：每侧不超过 12vw（与 settings.ts 的 MARGIN_CAP_VW 同步）。
+     留白是绝对 px（0–120），320px 屏上 120 会把正文压到 52px（一行 2 字）；
+     而 1440px 屏 12vw = 172px > 120，所以**桌面行为完全不变**。 */
+  padding: 32px min(var(--reader-page-margin, 20px), 12vw);
   font-size: var(--reader-font-size, 18px);
   line-height: var(--reader-line-height, 1.9);
+  /* 长串（URL / 数字列举 / 无空格英文词）在窄栏里默认不会断，会顶破容器 →
+     reader-scroll 出现横向滚动条；而 .reader-scroll 是 touch-action:pan-y，
+     手机上溢出的字"看得见、摸不着"。break-word 只在单词放不下时才断，
+     中文与正常英文段落不受影响（不要用 anywhere：它会改变 min-content 计算）。 */
+  overflow-wrap: break-word;
   /* 兜底值必须与 settings.ts 的 FONT_STACKS.system 一致：变量一定被内联注入，
      这里只在注入失败时生效，别再写死某个平台专有字体名 */
   font-family: var(--reader-font-family, system-ui, sans-serif);
@@ -1515,8 +1529,9 @@ body {
 /* ---------- 手机：侧栏改成底部浮层 ----------
    之前 280px 目录 + 300px 排版 并排挤在 390px 屏上：正文被压成一条缝、
    右边那个面板被裁掉一半。手机一律改成从底部升起的浮层（宽度占满、高度上限 78vh），
-   字号/行距调完能立刻看见上面正文的变化，改完点遮罩或 × 收起。 */
-@media (max-width: 720px) {
+   字号/行距调完能立刻看见上面正文的变化，改完点遮罩或 × 收起。
+   断点同顶栏那条：补 (max-height:500px) 让手机横屏也走移动布局。 */
+@media (max-width: 720px), (max-height: 500px) and (max-width: 1024px) {
   .toc-panel,
   .settings-panel,
   .bookmark-panel,

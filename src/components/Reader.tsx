@@ -44,10 +44,13 @@ import {
   FONT_LABELS,
   customFontValue,
   contentWidthFactor,
+  effectivePageMargin,
+  pageMarginCapPx,
   FONT_PROBE_FAMILIES,
   fontStack,
   loadSettings,
   PAGE_MARGIN_MAX,
+  PAGE_MARGIN_STEP,
   saveSettings,
   type CustomFont,
   type FontKey,
@@ -110,6 +113,15 @@ export function Reader({ bookId, onExit }: Props) {
   const [currentChapter, setCurrentChapter] = useState(0)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settings, setSettings] = useState<ReaderSettings>(DEFAULT_SETTINGS)
+  // 视口宽：留白要按屏宽封顶（每侧 ≤ 12%），所以它必须跟着 resize / 转屏重算。
+  // 用 state 而非每次渲染现读 innerWidth —— 重渲染的时机与窗口尺寸变化无关，
+  // 现读会在别的 state 变化时读到"恰好此刻"的值，逻辑上不可预期。
+  const [viewportWidth, setViewportWidth] = useState(() =>
+    typeof window === 'undefined' ? 0 : window.innerWidth,
+  )
+  // 本屏的留白上限（桌面 = PAGE_MARGIN_MAX，手机按其屏宽的 12%）。
+  // 渲染期算一次即可，纯函数无副作用；滑块的 max、注入值、提示文案共用它。
+  const marginCap = pageMarginCapPx(viewportWidth)
   // 恢复位置提示 toast：短暂显示后自动消失
   const [showRestoreHint, setShowRestoreHint] = useState(false)
   const [bookmarksOpen, setBookmarksOpen] = useState(false)
@@ -275,6 +287,14 @@ export function Reader({ bookId, onExit }: Props) {
       pumpRef.current = false
     }
   }, [loadChapter, needMore])
+
+  // 视口宽跟随窗口变化（含手机转屏）：留白的屏宽封顶靠它算，
+  // 不监听的话转屏后封顶值还是转屏前的，窄屏→宽屏会残留过紧的限制。
+  useEffect(() => {
+    const onResize = () => setViewportWidth(window.innerWidth)
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
 
   // 打开书
   useEffect(() => {
@@ -1530,7 +1550,9 @@ export function Reader({ bookId, onExit }: Props) {
           style={{
             '--reader-font-size': `${settings.fontSize}px`,
             '--reader-line-height': `${settings.lineHeight}`,
-            '--reader-page-margin': `${settings.pageMargin}px`,
+            // 生效留白 = min(设置值, 屏宽封顶 12%)：手机上把 120 拖到底也不会
+            // 把正文压成一条线（见 settings.ts 的 pageMarginCapPx）
+            '--reader-page-margin': `${effectivePageMargin(settings.pageMargin, viewportWidth)}px`,
             // 栏宽系数：留白 20px 及以上 = 1（标准 760px 栏宽），往 0 拖线性放宽，
             // 0 时为 0 → .chapter 的 max-width 变成 100%，正文真正铺满（见 index.css）
             '--reader-content-t': `${contentWidthFactor(settings.pageMargin)}`,
@@ -1645,17 +1667,24 @@ export function Reader({ bookId, onExit }: Props) {
                     旧版这里是「正文最大宽度」（480–900），在手机上恒大于屏宽，
                     滑块怎么拖正文都一样宽；现在 0–120 全程可见地生效。
                     另外栏宽上限也跟着滑块走（contentWidthFactor）：留白 ≥ 20px 时
-                    是标准 760px 栏宽，越往 0 拖上限越放宽，0 就是铺满可用宽度。 */}
+                    是标准 760px 栏宽，越往 0 拖上限越放宽，0 就是铺满可用宽度。
+                    滑块上限按屏宽收（min(120, 12% 屏宽)）：否则手机上滑块右半段
+                    全是"拖了没反应"的死区（屏幕只认 44px，却让你拖到 120）。 */}
                 <input
                   type="range"
                   min="0"
-                  max={PAGE_MARGIN_MAX}
-                  step="4"
-                  value={settings.pageMargin}
+                  max={marginCap}
+                  step={PAGE_MARGIN_STEP}
+                  value={effectivePageMargin(settings.pageMargin, viewportWidth)}
                   aria-label="页边距"
                   onChange={(e) => updateSettings({ pageMargin: Number(e.target.value) })}
                 />
-                <p className="settings-hint">往右拖两侧留白变宽、每行字数变少；拖到 0 正文铺满</p>
+                <p className="settings-hint">
+                  往右拖两侧留白变宽、每行字数变少；拖到 0 正文铺满
+                  {marginCap < PAGE_MARGIN_MAX
+                    ? `（本屏每侧最多 ${marginCap}px：再往里挤就放不下一行了）`
+                    : ''}
+                </p>
               </div>
 
               <div className="settings-group">
