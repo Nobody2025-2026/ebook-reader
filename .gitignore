@@ -47,3 +47,6 @@ src-tauri/target/
 
 # 发版时由 scripts/release-notes.mjs 生成的发布说明，CI 临时产物
 release-notes.md
+
+# WorkBuddy/CodeBuddy 运行时生成的记忆片段（工具产物，与项目无关）
+assets/gep/
