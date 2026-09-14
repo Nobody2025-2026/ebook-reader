@@ -95,6 +95,48 @@ body {
   max-width: 640px;
 }
 
+/* ---- 书库工具条：排序下拉 + 筛选输入（P1-6）---- */
+.library-tools {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.library-tools__filter {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-size: 14px;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+.library-tools__filter:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.library-tools__sort {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.library-tools__sort select {
+  padding: 7px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-size: 14px;
+  background: var(--bg);
+  color: var(--fg);
+}
+
 .library-hint__dismiss {
   margin-left: 8px;
   padding: 0;

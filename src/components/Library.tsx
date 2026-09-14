@@ -1,5 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { webBookSource } from '../lib/bookSource'
+import {
+  filterBooks,
+  sortBooks,
+  SORT_KEYS,
+  SORT_LABELS,
+  type SortKey,
+} from '../lib/bookList'
 import { isValidCoverDataUrl } from '../lib/cover'
 import type { ReadingProgress } from '../lib/progress'
 import type { BookMeta, ReadingStats } from '../lib/storage'
@@ -130,6 +137,12 @@ export function Library({
   // 撤销窗口内的书先藏起来（乐观移除）；此时 books 里其实还有它
   const visibleBooks = pendingBook ? books.filter((b) => b.id !== pendingBook.id) : books
 
+  // ---- 排序 / 筛选（P1-6）----
+  // 原先只有"导入时间倒序"一种排法。书一多（>20 本）就找不到想读的那本。
+  const [sortKey, setSortKey] = useState<SortKey>('added')
+  const [filterText, setFilterText] = useState('')
+  const shownBooks = sortBooks(filterBooks(visibleBooks, filterText), sortKey)
+
   return (
     <div
       className={`library${dragging ? ' is-dragging' : ''}`}
@@ -161,14 +174,48 @@ export function Library({
         </p>
       )}
 
+      {/* 排序 / 筛选工具条（P1-6）。书架非空才出现——空书架时它只是噪音。 */}
+      {visibleBooks.length > 0 && (
+        <div className="library-tools">
+          <input
+            type="search"
+            className="library-tools__filter"
+            value={filterText}
+            onChange={(e) => setFilterText(e.target.value)}
+            placeholder="按书名 / 作者筛选"
+            aria-label="筛选书籍"
+          />
+          <label className="library-tools__sort">
+            <span>排序</span>
+            <select
+              value={sortKey}
+              onChange={(e) => setSortKey(e.target.value as SortKey)}
+              aria-label="排序方式"
+            >
+              {SORT_KEYS.map((k) => (
+                <option key={k} value={k}>
+                  {SORT_LABELS[k]}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+      )}
+
       {visibleBooks.length === 0 ? (
         <div className="empty">
           <p className="empty-title">书架是空的</p>
           <p className="empty-sub">把 EPUB 拖进来，或者点上面的「导入书籍」</p>
         </div>
+      ) : shownBooks.length === 0 ? (
+        // 有书、只是筛不出来。这时候还说"书架是空的"就是误导。
+        <div className="empty">
+          <p className="empty-title">没有匹配的书</p>
+          <p className="empty-sub">换个关键词，或者清空筛选</p>
+        </div>
       ) : (
         <ul className="shelf">
-          {visibleBooks.map((book) => {
+          {shownBooks.map((book) => {
             const percent = book.progress?.percent ?? 0
             return (
               <li key={book.id} className="book-card">

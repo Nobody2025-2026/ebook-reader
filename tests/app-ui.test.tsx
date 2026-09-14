@@ -277,6 +277,43 @@ describe('书库页', () => {
     expect(screen.queryByText(/可能连书架一起清掉/)).toBeNull()
   })
 
+  // P1-6：书库排序 / 筛选。书一多（>20 本）找不到想读的那本就是刚需。
+  it('可按书名 / 作者筛选，筛不出来时说"没有匹配"而不是"书架是空的"', () => {
+    const books = [
+      { ...meta, id: 'b1', title: '水浒传', author: '施耐庵', addedAt: 2 },
+      { ...meta, id: 'b2', title: '三国演义', author: '罗贯中', addedAt: 1 },
+    ]
+    render(<Library books={books} importing={false} importHint="" onImport={vi.fn()} onOpen={vi.fn()} onRestart={vi.fn()} onDelete={vi.fn()} />)
+
+    fireEvent.change(screen.getByLabelText('筛选书籍'), { target: { value: '水浒' } })
+    expect(screen.getByText('水浒传')).toBeInTheDocument()
+    expect(screen.queryByText('三国演义')).toBeNull()
+
+    fireEvent.change(screen.getByLabelText('筛选书籍'), { target: { value: 'zzz' } })
+    expect(screen.getByText('没有匹配的书')).toBeInTheDocument()
+    // 关键：书架里明明有书，不能误报"书架是空的"
+    expect(screen.queryByText('书架是空的')).toBeNull()
+  })
+
+  it('可切换排序方式：默认导入时间倒序，切到「作者」后顺序随之变化', () => {
+    const books = [
+      { ...meta, id: 'b1', title: 'Z书', author: 'Ann', addedAt: 1 },
+      { ...meta, id: 'b2', title: 'A书', author: 'Zed', addedAt: 2 },
+    ]
+    const { container } = render(
+      <Library books={books} importing={false} importHint="" onImport={vi.fn()} onOpen={vi.fn()} onRestart={vi.fn()} onDelete={vi.fn()} />,
+    )
+    const titles = () =>
+      Array.from(container.querySelectorAll('.book-title')).map((el) => el.textContent)
+
+    // 默认：导入时间倒序（addedAt 大的在前）
+    expect(titles()).toEqual(['A书', 'Z书'])
+
+    fireEvent.change(screen.getByLabelText('排序方式'), { target: { value: 'author' } })
+    // Ann（Z书）排在 Zed（A书）之前
+    expect(titles()).toEqual(['Z书', 'A书'])
+  })
+
   it('拿到保护（或环境不支持）时不出提示，避免无谓噪音', () => {
     render(<Library books={[meta]} importing={false} importHint="" onImport={vi.fn()} onOpen={vi.fn()} onRestart={vi.fn()} onDelete={vi.fn()} />)
     expect(screen.queryByText(/可能连书架一起清掉/)).toBeNull()
