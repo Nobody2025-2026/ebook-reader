@@ -27,6 +27,10 @@ interface Props {
   books: LibraryBook[]
   importing: boolean
   importHint: string
+  /** 浏览器拒绝持久化存储：数据可能被自动清除，提示用户导出备份 */
+  storageUnprotected?: boolean
+  /** 用户点了「不再提示」 */
+  onDismissStorageWarning?: () => void
   onImport: (file: File) => void
   onOpen: (id: string) => void
   /** 从头读：清除进度后打开（区别于「继续阅读」的自动恢复） */
@@ -34,7 +38,17 @@ interface Props {
   onDelete: (id: string) => void
 }
 
-export function Library({ books, importing, importHint, onImport, onOpen, onRestart, onDelete }: Props) {
+export function Library({
+  books,
+  importing,
+  importHint,
+  storageUnprotected,
+  onDismissStorageWarning,
+  onImport,
+  onOpen,
+  onRestart,
+  onDelete,
+}: Props) {
   const [dragging, setDragging] = useState(false)
   // 待确认删除的书：点 × 先弹确认框，**不再一键直删**（删掉的是书+进度+书签+笔记+统计）
   const [confirmBook, setConfirmBook] = useState<LibraryBook | null>(null)
@@ -134,6 +148,18 @@ export function Library({ books, importing, importHint, onImport, onOpen, onRest
       </header>
 
       {importHint && <p className="library-hint">{importHint}</p>}
+
+      {/* 空书架时不说这些：没东西可丢，先提示只会让人以为软件有问题。
+          有书了再说，并且允许一键永久关掉——否则天天见面就成了噪音，用户会连其他提示一起无视。 */}
+      {storageUnprotected && visibleBooks.length > 0 && (
+        <p className="library-hint library-hint--warn">
+          浏览器没有把本站数据列为「永久保留」，磁盘紧张或清理缓存时可能连书架一起清掉。
+          重要笔记建议在阅读页用「笔记 → 导出」备份。
+          <button className="library-hint__dismiss" onClick={onDismissStorageWarning}>
+            不再提示
+          </button>
+        </p>
+      )}
 
       {visibleBooks.length === 0 ? (
         <div className="empty">

@@ -248,6 +248,39 @@ describe('书库页', () => {
     fireEvent.click(screen.getByRole('button', { name: '从头读' }))
     expect(onRestart).toHaveBeenCalledWith('b1')
   })
+
+  // 浏览器拒绝持久化存储时，数据可能被自动清除——但只在"确实有东西可丢"时才提，
+  // 且允许一键永久关掉。Chrome 对全新访客基本一律拒绝，逢人就喊就成了狼来了。
+  it('有书且未拿到持久化存储时给出备份提示，可一键关掉', () => {
+    const onDismiss = vi.fn()
+    render(
+      <Library
+        books={[meta]}
+        importing={false}
+        importHint=""
+        storageUnprotected
+        onDismissStorageWarning={onDismiss}
+        onImport={vi.fn()}
+        onOpen={vi.fn()}
+        onRestart={vi.fn()}
+        onDelete={vi.fn()}
+      />,
+    )
+    expect(screen.getByText(/可能连书架一起清掉/)).toBeInTheDocument()
+    expect(screen.getByText(/导出/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '不再提示' }))
+    expect(onDismiss).toHaveBeenCalled()
+  })
+
+  it('空书架时不提这条：没东西可丢，先提示只会让人以为软件坏了', () => {
+    render(<Library books={[]} importing={false} importHint="" storageUnprotected onImport={vi.fn()} onOpen={vi.fn()} onRestart={vi.fn()} onDelete={vi.fn()} />)
+    expect(screen.queryByText(/可能连书架一起清掉/)).toBeNull()
+  })
+
+  it('拿到保护（或环境不支持）时不出提示，避免无谓噪音', () => {
+    render(<Library books={[meta]} importing={false} importHint="" onImport={vi.fn()} onOpen={vi.fn()} onRestart={vi.fn()} onDelete={vi.fn()} />)
+    expect(screen.queryByText(/可能连书架一起清掉/)).toBeNull()
+  })
 })
 
 // 曾经点一下 × 就直删：书 + 进度 + 书签 + 全部笔记 + 统计一次性蒸发，无确认、无撤销。

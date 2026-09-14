@@ -77,6 +77,26 @@ body {
   margin: 0 0 20px;
 }
 
+/* 未拿到持久化存储：不是错误，但用户得知道数据可能被浏览器清掉，用警示色而非灰色 */
+.library-hint--warn {
+  color: var(--danger);
+  border-left: 2px solid var(--danger);
+  padding-left: 10px;
+  line-height: 1.6;
+  max-width: 640px;
+}
+
+.library-hint__dismiss {
+  margin-left: 8px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
 .empty {
   border: 1px dashed var(--line);
   border-radius: 16px;

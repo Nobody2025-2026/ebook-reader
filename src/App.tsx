@@ -3,6 +3,7 @@ import { Library, type LibraryBook } from './components/Library'
 import { Reader } from './components/Reader'
 import { COVER_VERSION, coverToDataUrl, isValidCoverDataUrl } from './lib/cover'
 import { openEpub, type OpenedBook } from './lib/epub'
+import { dismissStorageHint, ensurePersistentStorage, isStorageHintDismissed } from './lib/persistence'
 import { navigate, useHashRoute } from './lib/router'
 import {
   deleteBook,
@@ -66,6 +67,9 @@ export default function App() {
   const [books, setBooks] = useState<LibraryBook[]>([])
   const [importing, setImporting] = useState(false)
   const [importHint, setImportHint] = useState('')
+  // 浏览器拒绝持久化存储时（磁盘紧张会连带把书、进度、笔记一起清掉），
+  // 书库给一条常驻提示，引导用户用导出做备份。拿不到保护是真事，不该瞒着用户。
+  const [storageUnprotected, setStorageUnprotected] = useState(false)
   // 后台补封面是异步的，可能在组件卸载后才跑完；卸载后不能再 setState，
   // 否则 React 在 jsdom 环境销毁后仍会调度更新（测试里报 "window is not defined"）。
   const mountedRef = useRef(true)
@@ -89,6 +93,16 @@ export default function App() {
   useEffect(() => {
     void refresh()
   }, [refresh])
+
+  // 启动时安静地申请一次持久化存储。只有明确被拒才留痕；
+  // 'unsupported'（老浏览器 / 私密模式）提示了用户也无能为力，只会添噪音。
+  // 用户说过"不再提示"就直接跳过，连申请都省了。
+  useEffect(() => {
+    if (isStorageHintDismissed()) return
+    void ensurePersistentStorage().then((state) => {
+      if (mountedRef.current && state === 'denied') setStorageUnprotected(true)
+    })
+  }, [])
 
   const handleImport = useCallback(
     async (file: File) => {
@@ -146,6 +160,11 @@ export default function App() {
     void refresh()
   }, [refresh])
 
+  const dismissStorageWarning = useCallback(() => {
+    dismissStorageHint()
+    setStorageUnprotected(false)
+  }, [])
+
   if (route.name === 'read') {
     return <Reader bookId={route.id} onExit={goLibrary} />
   }
@@ -155,6 +174,8 @@ export default function App() {
       books={books}
       importing={importing}
       importHint={importHint}
+      storageUnprotected={storageUnprotected}
+      onDismissStorageWarning={dismissStorageWarning}
       onImport={(file) => void handleImport(file)}
       onOpen={(id) => navigate(`/read/${encodeURIComponent(id)}`)}
       onRestart={(id) => void handleRestart(id)}
