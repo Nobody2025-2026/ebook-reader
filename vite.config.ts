@@ -14,6 +14,14 @@ export default defineConfig({
   server: {
     port: 5173,
     strictPort: true,
+    // 手机/平板真机调试：vite 默认只监听回环（[::1]:5173），局域网设备连不上，
+    // 且 `localhost` 在手机上指的是"手机自己"。host: true = 监听所有网卡
+    // （0.0.0.0 + ::），手机访问 http://<本机局域网IP>:5173/ebook-reader/ 即可。
+    // ⚠️ 这会把 dev server 对整个局域网开放（同一 Wi-Fi 下谁都能访问）。
+    //   在家用没问题；在公共 Wi-Fi 下用完请把这里改回 false 或直接停掉 dev server。
+    // ⚠️ 手机上是**独立的 origin**（IP 与 localhost 不同源）→ IndexedDB 独立，
+    //   书库/进度/笔记都是空的，需要重新导书。这不是数据丢失。
+    host: true,
   },
   test: {
     environment: 'jsdom',
