@@ -15,6 +15,7 @@ import {
   FONT_PROBE_FAMILIES,
   FONT_STACKS,
   PAGE_MARGIN_MAX,
+  contentWidthFactor,
   customFontValue,
   fontStack,
   loadSettings,
@@ -171,5 +172,47 @@ describe('loadSettings 页边距迁移', () => {
     // 宽屏上：栏宽上限 − 2×留白
     const desktopText = CONTENT_MAX_PX - DEFAULT_SETTINGS.pageMargin * 2
     expect(desktopText).toBeGreaterThan(600)
+  })
+})
+
+// 栏宽系数：把 max-width 从"写死 760px"变成"随留白放宽"，留白 0 = 正文铺满。
+// 起因：默认留白下 1512 视口实测正文盒恒为 760px，两侧各空 206px，
+// 把留白拖到 0 那 206px 一分不少 —— 用户报"页边距设 0 两边还空那么多"。
+describe('contentWidthFactor（栏宽系数）', () => {
+  it('留白 0 → 0（取消栏宽上限，正文铺满）', () => {
+    expect(contentWidthFactor(0)).toBe(0)
+  })
+
+  it('默认留白 → 1（标准栏宽 760px，观感与旧版一致）', () => {
+    expect(contentWidthFactor(DEFAULT_SETTINGS.pageMargin)).toBe(1)
+  })
+
+  it('0 与默认值之间线性插值', () => {
+    const mid = DEFAULT_SETTINGS.pageMargin / 2
+    expect(contentWidthFactor(mid)).toBeCloseTo(0.5, 6)
+    expect(contentWidthFactor(mid / 2)).toBeCloseTo(0.25, 6)
+  })
+
+  it('大于默认留白一律 1（这一段是纯加留白，不再动栏宽）', () => {
+    for (const v of [DEFAULT_SETTINGS.pageMargin + 1, 60, PAGE_MARGIN_MAX]) {
+      expect(contentWidthFactor(v)).toBe(1)
+    }
+  })
+
+  it('非法值走 normalizePageMargin：负数→0，NaN/非数字→默认', () => {
+    expect(contentWidthFactor(-30)).toBe(0)
+    expect(contentWidthFactor(Number.NaN)).toBe(1)
+    expect(contentWidthFactor('80' as unknown as number)).toBe(1)
+  })
+
+  it('单调不增：留白越大，系数只会更小或不变（不会出现「越拖越宽」）', () => {
+    let prev = contentWidthFactor(0)
+    expect(prev).toBe(0)
+    for (let m = 2; m <= PAGE_MARGIN_MAX; m += 2) {
+      const t = contentWidthFactor(m)
+      expect(t).toBeGreaterThanOrEqual(prev)
+      prev = t
+    }
+    expect(prev).toBe(1)
   })
 })

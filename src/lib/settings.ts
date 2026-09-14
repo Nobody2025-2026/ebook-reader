@@ -40,9 +40,21 @@ export interface ReaderSettings {
 
 // 页边距的取值上限。语义见下：这是"留白"，不是"宽度"。
 export const PAGE_MARGIN_MAX = 120
-// 正文栏的最大宽度（CSS 里的 --reader-content-max 与之保持一致）。
-// 页边距在它之内继续收窄：文字宽 = min(可用宽, CONTENT_MAX) - 2 × pageMargin。
+// 标准栏宽（CSS 里的 --reader-content-max 与它保持一致）。
+// 留白 ≥ 默认留白时按它收窄：文字宽 = CONTENT_MAX_PX − 2 × pageMargin；
+// 留白比默认更小时按 contentWidthFactor 线性放宽，直到"铺满可用宽度"。
 export const CONTENT_MAX_PX = 760
+
+/** 栏宽系数 t ∈ [0, 1]：留白 0 → 0（不设栏宽上限，正文铺满可用宽度）；
+ *  留白 ≥ DEFAULT_SETTINGS.pageMargin → 1（用标准栏宽 CONTENT_MAX_PX）。
+ *  CSS 拿它在「铺满」与「760px」之间插值：max-width = (1−t) × 100% + t × 760px。
+ *
+ *  为什么要有它：旧版 max-width 恒为 760px、与滑块完全无关，于是**宽窗口下把留白调到
+ *  0，两侧仍各空 (可用宽 − 760)/2**（1512 视口实测各 206px）——用户看到的就是这句
+ *  "页边距设 0，两边还空那么多"。窄屏（可用宽 < 760）本来就不受上限约束，行为不变。 */
+export function contentWidthFactor(pageMargin: number): number {
+  return Math.min(1, normalizePageMargin(pageMargin) / DEFAULT_SETTINGS.pageMargin)
+}
 
 export const DEFAULT_SETTINGS: ReaderSettings = {
   fontSize: 18,

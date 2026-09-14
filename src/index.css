@@ -535,11 +535,16 @@ body {
 }
 
 .chapter {
-  /* --reader-content-max 是"栏宽上限"（固定 760px，与 settings.ts 的 CONTENT_MAX_PX 同步），
-     --reader-page-margin 是"左右留白"（用户可调，见排版面板）。
-     两者是分开的：手机上可用宽只有 350px，栏宽上限根本轮不到它起作用，
-     真正决定每行字数的是留白——旧版把留白做成 max-width，所以窄屏上滑块完全无效。 */
-  max-width: var(--reader-content-max, 760px);
+  /* 栏宽 = 在「可用宽 100%」与「标准栏宽 760px」之间按 --reader-content-t 插值：
+       t=1（留白 ≥ 20px）→ 760px；t=0（留白 0）→ 100%，正文铺满。
+     旧版这里写死 760px、与滑块无关，于是宽窗口下把留白调到 0，两侧仍各空
+     (可用宽 − 760)/2（1512 视口实测各 206px）——"页边距设 0 两边还空那么多"。
+     t 由 settings.ts 的 contentWidthFactor 算（t 未注入时回落 1 = 旧行为）。
+     --reader-page-margin 是"左右留白"，与栏宽是两件事，别合成一个 max-width。 */
+  max-width: calc(
+    (1 - var(--reader-content-t, 1)) * 100% + var(--reader-content-t, 1) *
+      var(--reader-content-max, 760px)
+  );
   margin: 0 auto;
   padding: 32px var(--reader-page-margin, 20px);
   font-size: var(--reader-font-size, 18px);

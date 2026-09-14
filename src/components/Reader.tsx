@@ -43,6 +43,7 @@ import {
   FONT_KEYS,
   FONT_LABELS,
   customFontValue,
+  contentWidthFactor,
   FONT_PROBE_FAMILIES,
   fontStack,
   loadSettings,
@@ -1530,6 +1531,9 @@ export function Reader({ bookId, onExit }: Props) {
             '--reader-font-size': `${settings.fontSize}px`,
             '--reader-line-height': `${settings.lineHeight}`,
             '--reader-page-margin': `${settings.pageMargin}px`,
+            // 栏宽系数：留白 20px 及以上 = 1（标准 760px 栏宽），往 0 拖线性放宽，
+            // 0 时为 0 → .chapter 的 max-width 变成 100%，正文真正铺满（见 index.css）
+            '--reader-content-t': `${contentWidthFactor(settings.pageMargin)}`,
             '--reader-font-family': fontStack(settings.fontFamily),
           } as React.CSSProperties}
         >
@@ -1639,7 +1643,9 @@ export function Reader({ bookId, onExit }: Props) {
                 </div>
                 {/* 语义是「左右留白」：值越大正文越窄。
                     旧版这里是「正文最大宽度」（480–900），在手机上恒大于屏宽，
-                    滑块怎么拖正文都一样宽——现在 0–120 全程可见地生效。 */}
+                    滑块怎么拖正文都一样宽；现在 0–120 全程可见地生效。
+                    另外栏宽上限也跟着滑块走（contentWidthFactor）：留白 ≥ 20px 时
+                    是标准 760px 栏宽，越往 0 拖上限越放宽，0 就是铺满可用宽度。 */}
                 <input
                   type="range"
                   min="0"
@@ -1649,7 +1655,7 @@ export function Reader({ bookId, onExit }: Props) {
                   aria-label="页边距"
                   onChange={(e) => updateSettings({ pageMargin: Number(e.target.value) })}
                 />
-                <p className="settings-hint">往右拖两侧留白变宽、每行字数变少</p>
+                <p className="settings-hint">往右拖两侧留白变宽、每行字数变少；拖到 0 正文铺满</p>
               </div>
 
               <div className="settings-group">

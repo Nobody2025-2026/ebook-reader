@@ -8,11 +8,15 @@
 //   margin-drag-audit.mjs  验的是**控件能不能被真实鼠标拖到**（交互级）；
 //   两者都测不出 2026-09-14 用户报的那个现象：
 //     「拖页边距时文字整体横移、宽度没有任何变化」
-//   根因是几何而非代码 —— `.chapter` 是 `max-width:760px + margin:0 auto`，
-//   盒子**固定且居中不动**，页边距只是把**内容盒**往里收（`padding: 32px var(--pm)`）。
-//   于是：
-//     · 占满栏宽的段落 → 行盒跟着内容盒收窄（760 → 520）✓
+//   根因是几何而非代码 —— `.chapter` 是 `max-width + margin:0 auto`，盒子**居中**，
+//   页边距只是把**内容盒**往里收（`padding: 32px var(--pm)`）。于是：
+//     · 占满栏宽的段落 → 行盒跟着内容盒收窄（留白 0 → 1172px，留白 120 → 520px）✓
 //     · 短行（目录条目 / 短段 / 标题）→ 左边缘被推着右移，**自身宽度不变** ⚠️
+//
+//   栏宽上限自 2026-09-14 起随留白变化（settings.ts 的 contentWidthFactor）：
+//   留白 ≥ 20px 时固定 760px，往 0 拖线性放宽，0 = 铺满可用宽度。所以本脚本
+//   额外守一条 —— 留白 0 时最长段落行宽必须 ≈ 可用宽（旧版这里恒为 760px，
+//   1512 视口两侧各空 206px，用户报的"页边距设 0 两边还空那么多"就是它）。
 //   短行一多，整屏看起来就只剩"横移"，像是页边距没生效。
 //
 // 判据：同一屏里既有满行又有短行时，满行必须收窄、短行必须只位移；
@@ -148,6 +152,36 @@ if (longLines.length) {
 } else {
   console.log('✓ 凡是占满栏宽的段落都跟着收窄了（符合几何预期：短行只位移、满行才收窄）')
 }
+// ── 回归守卫：留白 0 必须"铺满" ──────────────────────────────────────────
+// 旧版 .chapter 的 max-width 恒为 760px、与滑块无关，宽窗口下留白拖到 0
+// 两侧仍各空 (可用宽 − 760)/2。这里用「可用宽 vs 最长段落行宽」直接卡住。
+await setMargin(0)
+const full = await page.evaluate(() => {
+  const sc = document.querySelector('.reader-scroll')
+  const cs = getComputedStyle(sc)
+  const r = sc.getBoundingClientRect()
+  const avail = Math.round(r.width - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight))
+  let widest = 0
+  for (const ch of document.querySelectorAll('.chapter')) {
+    for (const p of ch.querySelectorAll('p')) {
+      if ((p.textContent || '').trim().length < 60) continue
+      const rg = document.createRange()
+      rg.selectNodeContents(p)
+      widest = Math.max(widest, Math.round(rg.getBoundingClientRect().width))
+    }
+  }
+  const ch = document.querySelector('.chapter')
+  return { avail, widest, maxWidth: ch ? getComputedStyle(ch).maxWidth : '?' }
+})
+const flush = full.widest >= full.avail - 2
+console.log(`\n── 留白 0 是否铺满 ──`)
+console.log(
+  `可用宽=${full.avail}  最长段落行宽=${full.widest}  max-width=${full.maxWidth}  ${
+    flush ? '✓ 铺满' : `✗ 两侧仍留白（各 ${Math.round((full.avail - full.widest) / 2)}px）`
+  }`,
+)
+if (!flush) ok = false
+
 console.log(`${errs.length === 0 ? '✓' : '✗'} 无 JS 报错${errs.length ? '：' + errs.join(' | ') : ''}`)
 await browser.close()
 process.exit(ok ? 0 : 1)

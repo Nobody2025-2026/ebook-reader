@@ -1132,11 +1132,21 @@ describe('阅读器', () => {
       expect(Number(slider.max)).toBe(PAGE_MARGIN_MAX)
       expect(Number(slider.min)).toBeLessThan(390)
       expect(scroller.style.getPropertyValue('--reader-page-margin')).toBe('20px')
+      // 栏宽系数：默认留白下是 1（标准 760px 栏宽）
+      expect(scroller.style.getPropertyValue('--reader-content-t')).toBe('1')
 
       fireEvent.change(slider, { target: { value: '80' } })
       await waitFor(() =>
         expect(scroller.style.getPropertyValue('--reader-page-margin')).toBe('80px'),
       )
+
+      // 拖到 0：留白归零 + 栏宽系数归零（.chapter 的 max-width 变 100%，正文铺满）。
+      // 回归点：旧版只把 padding 归零，760px 的 max-width 还在，宽窗口两边照样空。
+      fireEvent.change(slider, { target: { value: '0' } })
+      await waitFor(() => {
+        expect(scroller.style.getPropertyValue('--reader-page-margin')).toBe('0px')
+        expect(scroller.style.getPropertyValue('--reader-content-t')).toBe('0')
+      })
     })
 
     it('切到夜间主题：.reader 挂上 theme-night（整套调色板靠它翻转）', async () => {
