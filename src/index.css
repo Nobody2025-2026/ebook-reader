@@ -407,6 +407,22 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+/* 顶栏百分比现在是个按钮（点击循环显示「百分比 / 本章剩余时间」，P1-2），
+   但外观要保持原来"一行文字"的样子：去掉按钮的边框、底色与内边距语义。 */
+.reader-percent--toggle {
+  border: none;
+  background: none;
+  padding: 2px 6px;
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.reader-percent--toggle:hover {
+  color: var(--fg);
+}
+
 /* 顶栏收起（点正文中间切换）。用 display:none 而不是 transform，
    收起后正文区立刻吃掉那一行高度，不留空白。 */
 .reader.is-chrome-hidden .reader-bar {

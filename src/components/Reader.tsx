@@ -25,6 +25,7 @@ import {
   saveProgress,
   updateAnnotationNote,
   addReadingSeconds,
+  getStats,
   touchOpen,
   type Annotation,
 } from '../lib/storage'
@@ -62,6 +63,10 @@ import {
   type TouchPoint,
 } from '../lib/gestures'
 import { canvasProbe, detectFontAvailability } from '../lib/fontAvailability'
+import {
+  estimateChapterRemainMinutes,
+  formatRemainText,
+} from '../lib/readingTime'
 
 // 块级元素选择器：覆盖小说/学术书里绝大多数情况。
 // 真实样本《涛动周期论》里就是这几种在撑页面。
@@ -288,6 +293,9 @@ export function Reader({ bookId, onExit }: Props) {
         bookTextsRef.current = null // 换书了，搜索文本缓存作废
         setBookmarks(await listBookmarks(bookId))
         setAnnotations(await listAnnotations(bookId))
+        // 剩余时间估算（P1-2）要用累计阅读时长。这里读到的是"本次进来之前"的值，
+        // 够用——估算本就只是参考，随后每次计时 flush 都会把它补新。
+        readSecondsRef.current = (await getStats(bookId))?.totalSeconds ?? 0
 
         // 恢复进度时把位置夹到正文区间，避免打开后落在封面/目录/版权/索引页
         // （脏 EPUB 常把 nav.xhtml 放在 spine 末尾，存进去后下次打开就"只有目录、翻不动"）。
@@ -402,6 +410,8 @@ export function Reader({ bookId, onExit }: Props) {
       const secs = Math.floor((Date.now() - readingStartRef.current) / 1000)
       if (secs > 0) {
         void addReadingSeconds(bookId, secs)
+        // 同步给"剩余时间估算"用的那份（P1-2）：读得越久，速度估计越接近真实
+        readSecondsRef.current += secs
         readingStartRef.current = Date.now()
       }
     }
@@ -458,6 +468,17 @@ export function Reader({ bookId, onExit }: Props) {
       bookmarksRef.current.some(
         (b) => b.chapterIndex === reportChapter && b.blockIndex === reportBlock,
       ),
+    )
+    // 本章剩余时间估算（P1-2）。样本不足时得到 null，UI 显示"估算中"而不是瞎猜一个数。
+    setRemainMinutes(
+      estimateChapterRemainMinutes({
+        weights: weightsRef.current,
+        chapterIndex: reportChapter,
+        withinRatio,
+        contentRange: range,
+        readSeconds: readSecondsRef.current,
+        percent: pct,
+      }),
     )
 
     latestProgress.current = {
@@ -583,6 +604,16 @@ export function Reader({ bookId, onExit }: Props) {
     setDragPercent(null)
     void jumpTo(chapterFromPercent(target, weightsRef.current, contentRangeRef.current))
   }, [jumpTo])
+
+  // ---- 本章剩余时间估算（P1-2）----
+  //
+  // 复用已有的累计阅读时长（`stats:` 的 totalSeconds，与计时器同口径、只算前台时间）
+  // 配合当前进度倒推阅读速度，再乘"本章还剩多少字"。点击顶栏百分比可在
+  // 「百分比 / 剩余时间」之间循环显示（照搬 Kindle 的做法）。
+  const [percentMode, setPercentMode] = useState<'percent' | 'remain'>('percent')
+  const [remainMinutes, setRemainMinutes] = useState<number | null>(null)
+  // 累计阅读秒数放 ref：handleScroll 每次滚动都要拿它估算，但没必要进依赖数组
+  const readSecondsRef = useRef(0)
 
   /**
    * 正文里的 <a> 统一在容器上做事件委托：书内脚注 / 目录锚点自己跳转，
@@ -1365,8 +1396,18 @@ export function Reader({ bookId, onExit }: Props) {
         >
           笔记{annotations.length > 0 ? ` ${annotations.length}` : ''}
         </button>
-        {/* 拖动中显示的是拖动值，松手后回到真实进度 */}
-        <span className="reader-percent">{(dragPercent ?? percent).toFixed(1)}%</span>
+        {/* 点击可在「百分比 / 本章剩余时间」之间循环（P1-2，照搬 Kindle 的交互）。
+            拖动进度条时显示拖动值；样本不足时剩余时间显示"估算中"，不瞎猜。
+            外观保持"一行文字"，所以用按钮但去掉边框与底色（见 CSS）。 */}
+        <button
+          className="reader-percent reader-percent--toggle"
+          onClick={() => setPercentMode((m) => (m === 'percent' ? 'remain' : 'percent'))}
+          title="点击切换：百分比 / 本章剩余时间"
+        >
+          {percentMode === 'percent'
+            ? `${(dragPercent ?? percent).toFixed(1)}%`
+            : formatRemainText(remainMinutes)}
+        </button>
       </header>
 
       {/* 书级可拖进度条（P1-1）：拖到 x% 跳到对应章，两端是上一章 / 下一章。

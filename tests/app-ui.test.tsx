@@ -844,6 +844,24 @@ describe('阅读器', () => {
     }
   })
 
+  // P1-2：顶栏百分比可点击，在「百分比 / 本章剩余时间」之间循环。
+  // 新书（累计阅读时长不足 1 分钟）刻意不给数字，显示"估算中"而不是瞎猜。
+  it('点击顶栏百分比可在「百分比 / 剩余时间」间循环', async () => {
+    await saveBook(meta, new File(['x'], 'book.epub'))
+    render(<Reader bookId="b1" onExit={vi.fn()} />)
+    await waitFor(() => expect(screen.getByText('c1 的正文')).toBeInTheDocument())
+
+    // 初始显示百分比
+    expect(screen.getByText(/%$/)).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /%$/ }))
+    expect(screen.getByText('剩余时间估算中')).toBeInTheDocument()
+
+    // 再点一次切回百分比
+    fireEvent.click(screen.getByRole('button', { name: '剩余时间估算中' }))
+    expect(screen.getByText(/%$/)).toBeInTheDocument()
+  })
+
   // ↓↓ P0-3：触屏手势。手机上"能看不能翻"是硬伤 —— 实测点左/右/中 scrollTop 全 Δ0
   describe('触屏手势（点按翻屏 / 滑动翻屏 / 点中间收起顶栏）', () => {
     /** jsdom 没有 TouchEvent，手动造一个带 changedTouches 的可冒泡事件喂给 React */
