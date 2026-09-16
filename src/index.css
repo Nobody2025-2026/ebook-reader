@@ -1592,3 +1592,178 @@ body {
   }
 }
 
+/* ---------- 快捷键速查表 + 首次引导（P1-4） ---------- */
+
+/* 顶栏那个「?」：就一个字符，别被 flex 拉成一大块 */
+.reader-help {
+  flex: none;
+  min-width: 36px;
+  font-weight: 600;
+}
+
+/* 速查表复用搜索面板的骨架（.search-panel 的宽度/滚动/手机端底部浮层都白拿），
+   只把宽度收窄一点——内容是"键位 + 一句说明"，跟搜索列表不一样。 */
+.shortcut-sheet {
+  width: 340px;
+}
+
+.shortcut-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 16px 20px;
+}
+
+.shortcut-group + .shortcut-group {
+  margin-top: 18px;
+}
+
+.shortcut-group__title {
+  margin-bottom: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  letter-spacing: 0.04em;
+}
+
+.shortcut-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.shortcut-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.shortcut-row:last-child {
+  border-bottom: none;
+}
+
+.shortcut-keys {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+/* 键帽：有边框、底部厚一档，一眼能看出"这是个键"而不是普通文字 */
+.shortcut-keys kbd {
+  padding: 2px 6px;
+  border: 1px solid var(--line);
+  border-bottom-width: 2px;
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+/* 手势那组没有键可画，用普通文字放同一列——别用键帽样式冒充键盘 */
+.shortcut-keys--text {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.shortcut-action {
+  font-size: 13px;
+  color: var(--fg);
+  text-align: right;
+}
+
+/* 首次引导气泡：绝对定位挂在正文区右上角，不占正文位置。
+   层级与 .restore-hint 同级（都在面板之下）：面板一开，气泡就该被遮罩压住。
+   ——注意面板在桌面端是静态元素、气泡是定位元素，光靠 z-index 压不住，
+   所以 Reader 里还配了一条"面板一开就收起气泡"。 */
+.shortcut-hint {
+  position: absolute;
+  top: 12px;
+  right: 16px;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: min(300px, calc(100% - 32px));
+  padding: 12px 12px 10px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--fg);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.16);
+}
+
+/* 整块正文可点：点了就开速查表（提示语必须带下一步入口，不然等于只告诉用户"有这个"） */
+.shortcut-hint__body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.shortcut-hint__title {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.shortcut-hint__text {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.shortcut-hint__actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.shortcut-hint__dismiss {
+  padding: 2px 0;
+  border: none;
+  background: transparent;
+  color: var(--accent);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.shortcut-hint__dismiss:hover {
+  text-decoration: underline;
+}
+
+.shortcut-hint__close {
+  padding: 0 4px;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+/* 手机：屏幕本来就小，气泡贴边、别压到正文中间；
+   浮层宽度也必须显式还原成 auto —— 上面那条 .shortcut-sheet{width:340px}
+   与"手机端底部浮层"那条规则**同权重**，而它在文件里更靠后，
+   会盖掉 left/right:0 撑满的效果（实测就是浮层只占 340px、右边露一条缝）。 */
+@media (max-width: 720px), (max-height: 500px) and (max-width: 1024px) {
+  .shortcut-sheet {
+    width: auto;
+  }
+
+  .shortcut-hint {
+    top: 8px;
+    right: 8px;
+    max-width: calc(100% - 16px);
+  }
+}
+

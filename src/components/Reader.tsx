@@ -87,6 +87,16 @@ import {
   estimateChapterRemainMinutes,
   formatPercentLine,
 } from '../lib/readingTime'
+import {
+  SHORTCUT_GROUPS,
+  TOUCH_GESTURES,
+  dismissShortcutHint,
+  formatKey,
+  markShortcutHintSeen,
+  matchShortcut,
+  modKeyLabel,
+  shouldShowShortcutHint,
+} from '../lib/shortcuts'
 
 // 块级元素选择器：覆盖小说/学术书里绝大多数情况。
 // 真实样本《涛动周期论》里就是这几种在撑页面。
@@ -126,6 +136,9 @@ interface Props {
   bookId: string
   onExit: () => void
 }
+
+/** 首次引导气泡在屏幕上停留多久（自动消失，不拦着人看书） */
+const SHORTCUT_HINT_MS = 8000
 
 export function Reader({ bookId, onExit }: Props) {
   const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading')
@@ -202,6 +215,19 @@ export function Reader({ bookId, onExit }: Props) {
   const [results, setResults] = useState<SearchHit[]>([])
   // 搜索文本抽取结果缓存（一本书只抽一次）
   const bookTextsRef = useRef<string[] | null>(null)
+
+  // ---- 快捷键速查表 + 首次引导（P1-4）----
+  //
+  // 现状是"10+ 个键都实现了、界面上零入口"，用户不知道等于白做。
+  // 这里补两条可发现路径：顶栏常驻「?」按钮（随时可查）、首次进阅读页弹一次轻引导。
+  // 键位内容全部来自 src/lib/shortcuts.ts —— 与键盘处理共用一份数据，不会说过时的话。
+  const [helpOpen, setHelpOpen] = useState(false)
+  // 首次引导气泡：只在"没点过不再提示 + 本次会话还没弹过"时为 true
+  const [showShortcutHint, setShowShortcutHint] = useState(shouldShowShortcutHint)
+  // 焦点归位用：开着时焦点进浮层的「×」，关掉后还给触发它的「?」按钮
+  // （与 P1-3 删除确认框同一套规矩：键盘用户不该被扔到页面某处）
+  const helpBtnRef = useRef<HTMLButtonElement | null>(null)
+  const helpCloseRef = useRef<HTMLButtonElement | null>(null)
 
   // ---- 触屏手势（P0-3）----
   // 顶栏是否隐藏：手机上这条栏占掉一整行，点正文中间即可收起/唤出。
@@ -783,14 +809,16 @@ export function Reader({ bookId, onExit }: Props) {
     setBookmarksOpen(false)
     setSearchOpen(false)
     setExportOpen(false)
+    setHelpOpen(false)
   }, [])
 
   const togglePanel = useCallback(
-    (name: 'toc' | 'settings' | 'bookmarks' | 'search') => {
+    (name: 'toc' | 'settings' | 'bookmarks' | 'search' | 'help') => {
       setTocOpen((v) => (name === 'toc' ? !v : false))
       setSettingsOpen((v) => (name === 'settings' ? !v : false))
       setBookmarksOpen((v) => (name === 'bookmarks' ? !v : false))
       setSearchOpen((v) => (name === 'search' ? !v : false))
+      setHelpOpen((v) => (name === 'help' ? !v : false))
       setExportOpen(false)
     },
     [],
@@ -953,7 +981,7 @@ export function Reader({ bookId, onExit }: Props) {
       if (sel && !sel.isCollapsed) return
 
       // 4) 侧栏开着时，点正文 = 关掉侧栏（手机上没有别的地方可点）
-      if (tocOpen || settingsOpen || bookmarksOpen || searchOpen || exportOpen) {
+      if (tocOpen || settingsOpen || bookmarksOpen || searchOpen || exportOpen || helpOpen) {
         e.preventDefault()
         closeAllPanels()
         return
@@ -971,13 +999,29 @@ export function Reader({ bookId, onExit }: Props) {
       e.preventDefault()
       scrollPage(zone === 'next' ? 1 : -1, true)
     },
-    [scrollPage, openSelectionPopover, tocOpen, settingsOpen, bookmarksOpen, searchOpen, exportOpen, closeAllPanels],
+    [
+      scrollPage,
+      openSelectionPopover,
+      tocOpen,
+      settingsOpen,
+      bookmarksOpen,
+      searchOpen,
+      exportOpen,
+      helpOpen,
+      closeAllPanels,
+    ],
   )
 
   // 侧栏一开就必须把顶栏叫回来，否则按钮被藏起来了还没法再点开
   useEffect(() => {
-    if (tocOpen || settingsOpen || bookmarksOpen || searchOpen || exportOpen) setChromeHidden(false)
-  }, [tocOpen, settingsOpen, bookmarksOpen, searchOpen, exportOpen])
+    if (tocOpen || settingsOpen || bookmarksOpen || searchOpen || exportOpen || helpOpen) {
+      setChromeHidden(false)
+      // 顺带收起首次引导：桌面端面板是静态元素、气泡是定位元素，
+      // 只靠 z-index 压不住，两个浮层叠一起很难看。用户既然已经在自己探索面板了，
+      // 这个气泡也就没用了（本次会话的记账早已完成，不会再来打扰）。
+      setShowShortcutHint(false)
+    }
+  }, [tocOpen, settingsOpen, bookmarksOpen, searchOpen, exportOpen, helpOpen])
 
   /** 当前视口顶压着的块。和滚动记进度用同一套定位，保证书签落在读者看到的位置 */
   const getCurrentAnchor = useCallback((): { chapterIndex: number; blockIndex: number } => {
@@ -1396,19 +1440,25 @@ export function Reader({ bookId, onExit }: Props) {
       if (!container) return
       const page = Math.max(container.clientHeight - 48, 200) // 一屏高度，留 48px 视觉衔接
 
-      if (e.key === 'Escape') {
+      // 按键 → 动作的翻译只有一处：src/lib/shortcuts.ts 的 matchShortcut。
+      // 这里不再出现 `e.key === 'b'` 这种硬编码 —— 速查浮层渲染的正是同一张表，
+      // 所以"说明里写的键"与"实际生效的键"不可能再对不上。
+      const hit = matchShortcut(e)
+
+      if (hit === 'close') {
         // 有浮层/面板开着时，Esc 先关它们，不要一按就把整本书关掉。
         // 尤其是刚框选完的确认浮层：Esc = "我选错了，取消"，最符合直觉。
         if (activeAnn) {
           setActiveAnn(null)
           return
         }
-        if (exportOpen || searchOpen || bookmarksOpen || settingsOpen || tocOpen) {
+        if (exportOpen || searchOpen || bookmarksOpen || settingsOpen || tocOpen || helpOpen) {
           setExportOpen(false)
           setSearchOpen(false)
           setBookmarksOpen(false)
           setSettingsOpen(false)
           setTocOpen(false)
+          setHelpOpen(false)
           return
         }
         onExit()
@@ -1422,73 +1472,127 @@ export function Reader({ bookId, onExit }: Props) {
         return
       }
 
-      const mod = e.ctrlKey || e.metaKey
-      // Ctrl/Cmd+B：一键书签（P1-3），与顶栏按钮同一动作。
-      // 放在下面那条"面板开着就 return"之前——面板开着时也照常可用。
-      if (mod && (e.key === 'b' || e.key === 'B')) {
-        e.preventDefault()
-        void toggleCurrentBookmark()
-        return
-      }
+      switch (hit) {
+        // Ctrl/Cmd+B：一键书签（P1-3），与顶栏按钮同一动作。
+        // 放在下面那条"面板开着就 return"之前——面板开着时也照常可用。
+        case 'bookmark':
+          e.preventDefault()
+          void toggleCurrentBookmark()
+          return
 
-      // ---- 标准快捷键（P1-4，约定照抄 Thorium）----
-      if (mod && (e.key === 'f' || e.key === 'F')) {
-        e.preventDefault()
-        togglePanel('search')
-        return
-      }
-      if (mod && e.key === 'Home') {
-        e.preventDefault()
-        void jumpTo(contentRangeRef.current.first)
-        return
-      }
-      if (mod && e.key === 'End') {
-        e.preventDefault()
-        void jumpTo(contentRangeRef.current.last)
-        return
-      }
-      if (mod && e.key === 'PageUp') {
-        e.preventDefault()
-        goAdjacentChapter(-1)
-        return
-      }
-      if (mod && e.key === 'PageDown') {
-        e.preventDefault()
-        goAdjacentChapter(1)
-        return
-      }
+        // ---- 标准快捷键（P1-4，约定照抄 Thorium）----
+        case 'search':
+          e.preventDefault()
+          togglePanel('search')
+          return
+        case 'bookStart':
+          e.preventDefault()
+          void jumpTo(contentRangeRef.current.first)
+          return
+        case 'bookEnd':
+          e.preventDefault()
+          void jumpTo(contentRangeRef.current.last)
+          return
+        case 'prevChapter':
+          e.preventDefault()
+          goAdjacentChapter(-1)
+          return
+        case 'nextChapter':
+          e.preventDefault()
+          goAdjacentChapter(1)
+          return
 
-      // 目录/排版面板开着时，方向键不应滚动正文（避免误操作）
-      if (tocOpen || settingsOpen) return
+        // 「?」（P1-4）：随手就能查出还有哪些键。同一个键再按一次收起。
+        case 'help':
+          e.preventDefault()
+          togglePanel('help')
+          return
 
-      switch (e.key) {
         // ↓/↑ 与 ←/→ 同义（Thorium 的约定：方向键 = 翻页单位）。
         // 原先只接了左右，用户下意识按上下键毫无反应，看着像"软件坏了"。
-        case 'ArrowRight':
-        case 'ArrowDown':
-        case 'PageDown':
-        case ' ':
+        case 'pageDown':
+        case 'pageUp':
+        case 'chapterTop': {
+          // 目录/排版面板开着时，方向键不应滚动正文（避免误操作）
+          if (tocOpen || settingsOpen) return
           e.preventDefault()
-          container.scrollBy({ top: page, behavior: 'auto' })
-          break
-        case 'ArrowLeft':
-        case 'ArrowUp':
-        case 'PageUp':
-          e.preventDefault()
-          container.scrollBy({ top: -page, behavior: 'auto' })
-          break
-        case 'Home':
-          e.preventDefault()
-          container.scrollTo({ top: 0, behavior: 'auto' })
-          break
+          if (hit === 'chapterTop') container.scrollTo({ top: 0, behavior: 'auto' })
+          else container.scrollBy({ top: hit === 'pageDown' ? page : -page, behavior: 'auto' })
+          return
+        }
+
+        // Esc 在上面已经处理掉了（它得能关掉浮动层，不能被输入框那条让路规则挡下）。
+        // 这里不用再写 case 'close'：TS 看得出那段提前返回是穷尽的，
+        // 写了反而会报"类型不可比较"（也正好证明"Esc 一定被拦住了"）。
+
+        // 不认识的键：交回浏览器（Tab 走焦点、Cmd+Q 退出，都不该被阅读器吞掉）
+        case null:
+          return
+
+        default: {
+          // 穷尽性检查：shortcuts.ts 里新增了键位却忘了在这里接处理器，
+          // 这一行会直接编译不过 —— 比"用户按了没反应"早得多地暴露问题。
+          const unhandled: never = hit
+          void unhandled
+          return
+        }
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [onExit, tocOpen, settingsOpen, toggleCurrentBookmark, togglePanel, jumpTo, goAdjacentChapter])
+  }, [
+    onExit,
+    // ⚠️ 这几个面板状态**必须**在依赖里（2026-09-16 真浏览器复核抓到的存量 bug）：
+    // 原先只列了 tocOpen / settingsOpen，于是"搜索 / 书签 / 笔记"面板打开时，
+    // 处理器还拿着"面板没开"的旧闭包，按 Esc 直接走进 onExit() 退回书库，
+    // 而不是关掉面板（activeAnn 同理：框选浮层按 Esc 也会整本书关掉）。
+    // 目录/排版因为在依赖里所以一直正常 —— 这就是它长期没被发现的原因。
+    activeAnn,
+    tocOpen,
+    settingsOpen,
+    bookmarksOpen,
+    searchOpen,
+    exportOpen,
+    helpOpen,
+    toggleCurrentBookmark,
+    togglePanel,
+    jumpTo,
+    goAdjacentChapter,
+  ])
+
+  // 速查浮层的焦点管理（P1-4，规矩同 P1-3 的删除确认框）：
+  // 打开时把焦点送进浮层（键盘用户不必再 Tab 找），关闭后还给触发它的那个「?」按钮。
+  // 刻意**不做焦点陷阱**：这是一张只读说明表，浮层里唯一的可聚焦元素就是「×」，
+  // 把 Tab 锁死反而成了新的坑（想直接离开的人会被困住）。
+  const prevHelpOpen = useRef(false)
+  useEffect(() => {
+    if (helpOpen) {
+      // 打开浮层本身就说明用户已经找到了入口，首次引导到此为止
+      setShowShortcutHint(false)
+      helpCloseRef.current?.focus()
+    } else if (prevHelpOpen.current) {
+      helpBtnRef.current?.focus()
+    }
+    prevHelpOpen.current = helpOpen
+  }, [helpOpen])
+
+  // 首次进阅读页的轻引导（P1-4）：只弹一次（判据见 shortcuts.ts），
+  // 出现即记账，N 秒后自己消失 —— 它是提示不是弹窗，不该杵在那儿等用户来点。
+  useEffect(() => {
+    if (!showShortcutHint) return
+    markShortcutHintSeen()
+    const timer = window.setTimeout(() => setShowShortcutHint(false), SHORTCUT_HINT_MS)
+    return () => window.clearTimeout(timer)
+  }, [showShortcutHint])
 
   // 离开页面前把最后的进度落盘
   useEffect(() => flushProgress, [flushProgress])
+
+  // 修饰键该显示成 ⌘ 还是 Ctrl 看当前平台（Mac 用户在键盘上找的是 ⌘ 键）；
+  // 引导文案里的「?」也从同一张表里取，免得哪天改了帮助键、文案还写着旧键。
+  const modLabel = modKeyLabel()
+  const helpKey = SHORTCUT_GROUPS.flatMap((g) => g.items).find((i) => i.id === 'help')?.keys[0]
+  const helpKeyLabel = helpKey ? formatKey(helpKey, modLabel) : '?'
 
   if (status === 'loading') {
     return (
@@ -1591,6 +1695,21 @@ export function Reader({ bookId, onExit }: Props) {
             ? formatPercentLine(percent, remainMinutes)
             : `${dragPercent.toFixed(1)}%`}
         </span>
+        {/* 快捷键入口（P1-4）：10+ 个键早就实现了，界面上却一个说明都没有，
+            用户不知道有这些键 = 功能白做一半。这个「?」就是那个"入口"：
+            常驻顶栏，随时可查；右键位（? 本身）也能开。
+            挂在最右端的原因：手机顶栏是横向可滑的，把高频按钮往左挤不值当；
+            而桌面端顶栏右侧本来就是"帮助"的常规位置。 */}
+        <button
+          ref={helpBtnRef}
+          className="btn btn-ghost reader-help"
+          onClick={() => togglePanel('help')}
+          title="键盘快捷键与触屏手势（按 ?）"
+          aria-label="键盘快捷键与触屏手势"
+          aria-expanded={helpOpen}
+        >
+          ?
+        </button>
       </header>
 
       {/* 书级可拖进度条（P1-1）：拖到 x% 跳到对应章，两端是上一章 / 下一章。
@@ -1683,8 +1802,48 @@ export function Reader({ bookId, onExit }: Props) {
 
         {/* 手机上侧栏是从底部升起的浮层，这层遮罩负责"点空白处关掉"；
             桌面端两个面板是并排的侧栏，遮罩在 CSS 里被隐藏。 */}
-        {(tocOpen || settingsOpen || bookmarksOpen || searchOpen || exportOpen) && (
+        {(tocOpen || settingsOpen || bookmarksOpen || searchOpen || exportOpen || helpOpen) && (
           <div className="panel-backdrop" onClick={closeAllPanels} aria-hidden="true" />
+        )}
+
+        {/* 首次进阅读页的轻引导（P1-4）：先让用户知道"有快捷键这回事"，
+            再给一个直接的下一步入口（点正文即开速查表）。
+            8 秒后自己消失；「不再提示」与「×」的区别是"永久"与"仅本次会话"。 */}
+        {showShortcutHint && (
+          <div className="shortcut-hint" role="status" aria-live="polite">
+            <button
+              type="button"
+              className="shortcut-hint__body"
+              onClick={() => togglePanel('help')}
+              title="查看全部快捷键与手势"
+            >
+              <span className="shortcut-hint__title">键盘也能翻书</span>
+              <span className="shortcut-hint__text">
+                按 {helpKeyLabel} 或点顶栏「?」，查看全部快捷键与触屏手势
+              </span>
+            </button>
+            <div className="shortcut-hint__actions">
+              <button
+                type="button"
+                className="shortcut-hint__dismiss"
+                onClick={() => {
+                  dismissShortcutHint()
+                  setShowShortcutHint(false)
+                }}
+                title="以后不再提示"
+              >
+                不再提示
+              </button>
+              <button
+                type="button"
+                className="shortcut-hint__close"
+                aria-label="关闭提示"
+                onClick={() => setShowShortcutHint(false)}
+              >
+                ×
+              </button>
+            </div>
+          </div>
         )}
 
         {tocOpen && (
@@ -2114,6 +2273,61 @@ export function Reader({ bookId, onExit }: Props) {
                   导出选中
                 </button>
               </div>
+            </div>
+          </aside>
+        )}
+
+        {/* 快捷键速查表（P1-4）。内容全部来自 src/lib/shortcuts.ts ——
+            与上面那个键盘处理函数共用一份数据，所以"这张表里写的键"
+            就是"按下去真管用的键"，不会各说各话。 */}
+        {helpOpen && (
+          <aside
+            className="search-panel shortcut-sheet"
+            role="dialog"
+            aria-label="键盘快捷键与触屏手势"
+          >
+            <div className="search-header">
+              <span>快捷键</span>
+              <button
+                ref={helpCloseRef}
+                className="btn btn-ghost"
+                onClick={() => setHelpOpen(false)}
+                title="关闭（Esc）"
+              >
+                ×
+              </button>
+            </div>
+            <div className="shortcut-body">
+              {SHORTCUT_GROUPS.map((group) => (
+                <section className="shortcut-group" key={group.id}>
+                  <div className="shortcut-group__title">{group.title}</div>
+                  <ul className="shortcut-list">
+                    {group.items.map((item) => (
+                      <li className="shortcut-row" key={item.id}>
+                        <span className="shortcut-keys">
+                          {item.keys.map((k) => (
+                            <kbd key={k.key}>{formatKey(k, modLabel)}</kbd>
+                          ))}
+                        </span>
+                        <span className="shortcut-action">{item.action}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+              ))}
+
+              {/* 触屏用户没有键盘，但"不知道就能不用"是同一个坑，一并写清 */}
+              <section className="shortcut-group">
+                <div className="shortcut-group__title">触屏手势</div>
+                <ul className="shortcut-list">
+                  {TOUCH_GESTURES.map((g) => (
+                    <li className="shortcut-row" key={g.move}>
+                      <span className="shortcut-keys shortcut-keys--text">{g.move}</span>
+                      <span className="shortcut-action">{g.action}</span>
+                    </li>
+                  ))}
+                </ul>
+              </section>
             </div>
           </aside>
         )}

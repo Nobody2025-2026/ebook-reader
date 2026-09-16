@@ -1645,3 +1645,250 @@ describe('阅读页书签', () => {
     })
   })
 })
+
+// P1-4：快捷键体系此前"实现了但没有入口"——10+ 个键，界面上一个字都没提。
+// 这一组同时守住两件事：入口真的存在（能开、能关、焦点归位），
+// 以及表里写的键真的都能用（每个键位逐个按一遍，含此前没测到的 Ctrl+Home /
+// Ctrl+PageUp / Ctrl+PageDown / 纯 Home）。
+describe('阅读器：快捷键可发现（P1-4）', () => {
+  const renderReader = async (onExit: () => void = vi.fn()) => {
+    await saveBook(meta, new File(['a'], 'book.epub'))
+    const utils = render(<Reader bookId="b1" onExit={onExit} />)
+    await waitFor(() => expect(screen.getByText('c1 的正文')).toBeInTheDocument())
+    return utils
+  }
+
+  const HELP_NAME = '键盘快捷键与触屏手势'
+
+  /** 打开速查表并返回浮层元素 */
+  const openHelp = async () => {
+    fireEvent.click(screen.getByRole('button', { name: HELP_NAME }))
+    return screen.findByRole('dialog', { name: HELP_NAME })
+  }
+
+  beforeEach(() => {
+    // 引导弹不弹取决于这两个存储：每条用例都从"全新用户"开始，免得互相污染
+    localStorage.clear()
+    sessionStorage.clear()
+  })
+
+  it('顶栏「?」打开速查表：分组齐全，且写出来的键就是真能用的键', async () => {
+    await renderReader()
+    const helpBtn = screen.getByRole('button', { name: HELP_NAME })
+    expect(helpBtn).toHaveAttribute('aria-expanded', 'false')
+    expect(helpBtn).toHaveTextContent('?')
+
+    const sheet = (await openHelp()) as HTMLElement
+    expect(helpBtn).toHaveAttribute('aria-expanded', 'true')
+
+    // 四组内容都在（键盘三组 + 触屏手势一组），且每组都有实际的条目
+    const groupTitles = [...sheet.querySelectorAll('.shortcut-group__title')].map(
+      (el) => el.textContent,
+    )
+    expect(groupTitles).toEqual(['翻屏', '章节与位置', '面板与操作', '触屏手势'])
+    for (const list of sheet.querySelectorAll('.shortcut-list')) {
+      expect(list.querySelectorAll('li').length).toBeGreaterThan(0)
+    }
+
+    // 键帽文案由"参与匹配的键"推导（jsdom 判不出 Mac → Ctrl；若改成 ⌘ 说明平台判定变了）
+    const kbdTexts = [...sheet.querySelectorAll('kbd')].map((el) => el.textContent)
+    expect(kbdTexts).toContain('Ctrl+PageDown')
+    expect(kbdTexts).toContain('Ctrl+B')
+    expect(kbdTexts).toContain('→')
+    expect(kbdTexts).toContain('空格')
+    expect(kbdTexts).toContain('?')
+
+    // 说明文字也在（不能只有键帽没有解释）
+    const actions = [...sheet.querySelectorAll('.shortcut-action')].map((el) => el.textContent)
+    expect(actions).toContain('下一章')
+    expect(actions).toContain('开关「搜索本书」')
+
+    // 手机用户看的那组：手势动作是从 gestures.ts 核实过的三条 + 划词
+    expect(sheet.textContent).toContain('上一屏 / 下一屏')
+    expect(sheet.textContent).toContain('收起 / 唤出顶栏')
+  })
+
+  it('按 ? 开关速查表；浮层开着时 Esc 只关浮层，不会把整本书关掉', async () => {
+    const onExit = vi.fn()
+    await renderReader(onExit)
+
+    fireEvent.keyDown(window, { key: '?' })
+    await screen.findByRole('dialog', { name: HELP_NAME })
+
+    // 同一个键再按一次收起
+    fireEvent.keyDown(window, { key: '?' })
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: HELP_NAME })).toBeNull())
+
+    fireEvent.keyDown(window, { key: '?' })
+    await screen.findByRole('dialog', { name: HELP_NAME })
+    fireEvent.keyDown(window, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: HELP_NAME })).toBeNull())
+    expect(onExit).not.toHaveBeenCalled()
+
+    // 浮层已关，此时 Esc 才是"回书库"
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(onExit).toHaveBeenCalled()
+  })
+
+  // 真浏览器复核（2026-09-16）抓到的**存量 bug**：键盘处理的 useEffect 依赖数组里
+  // 漏了 searchOpen / bookmarksOpen / exportOpen / activeAnn。于是"搜索 / 书签 / 笔记"
+  // 面板打开后按 Esc，处理器还拿着"面板没开"的旧闭包，直接走进 onExit() 退回书库。
+  // 目录 / 排版恰好在依赖里，所以这条路径一直正常 —— 这正是它长期没被发现的原因。
+  it('搜索 / 书签 / 框选浮层开着时按 Esc 只关它们，不会把整本书关掉', async () => {
+    const onExit = vi.fn()
+    const { container } = await renderReader(onExit)
+
+    // ① 搜索面板（Ctrl+F 打开）
+    fireEvent.keyDown(window, { key: 'f', ctrlKey: true })
+    await waitFor(() => expect(container.querySelector('.search-panel')).toBeTruthy())
+    fireEvent.keyDown(window, { key: 'Escape' })
+    await waitFor(() => expect(container.querySelector('.search-panel')).toBeNull())
+    expect(onExit).not.toHaveBeenCalled()
+    expect(screen.getByText('c1 的正文')).toBeInTheDocument()
+
+    // ② 书签面板（顶栏按钮打开）——注意别和「＋ 标记」搞混
+    fireEvent.click(screen.getByRole('button', { name: /^书签/ }))
+    await waitFor(() => expect(container.querySelector('.bookmark-panel')).toBeTruthy())
+    fireEvent.keyDown(window, { key: 'Escape' })
+    await waitFor(() => expect(container.querySelector('.bookmark-panel')).toBeNull())
+    expect(onExit).not.toHaveBeenCalled()
+
+    // ③ 框选后的确认浮层（activeAnn 原先也不在依赖里）
+    const p = container.querySelector('article[data-chapter-index="0"] p') as HTMLElement
+    const range = document.createRange()
+    range.setStart(p.firstChild as Text, 0)
+    range.setEnd(p.firstChild as Text, 2)
+    const sel = window.getSelection()!
+    sel.removeAllRanges()
+    sel.addRange(range)
+    fireEvent.mouseUp(container.querySelector('.reader-scroll') as HTMLElement)
+    await screen.findByText('加高亮')
+    fireEvent.keyDown(window, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByText('加高亮')).toBeNull())
+    expect(onExit).not.toHaveBeenCalled()
+
+    // ④ 全都关着时，Esc 才回到书库（且只回一次）
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(onExit).toHaveBeenCalledTimes(1)
+  })
+
+  it('焦点随浮层进出：打开进浮层，关掉回到「?」按钮', async () => {
+    await renderReader()
+    const helpBtn = screen.getByRole('button', { name: HELP_NAME })
+    await openHelp()
+
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByTitle('关闭（Esc）')))
+
+    fireEvent.keyDown(window, { key: 'Escape' })
+    await waitFor(() => expect(document.activeElement).toBe(helpBtn))
+  })
+
+  it('速查表与其它面板互斥（手机上不会两个浮层叠在一起）', async () => {
+    const { container } = await renderReader()
+    fireEvent.keyDown(window, { key: 'f', ctrlKey: true })
+    await waitFor(() => expect(container.querySelector('.search-panel')).toBeTruthy())
+
+    fireEvent.keyDown(window, { key: '?' })
+    await waitFor(() => expect(container.querySelector('.shortcut-sheet')).toBeTruthy())
+    // 打开速查表后，原来的搜索面板应该已经关了（.shortcut-sheet 自身也带 .search-panel 类）
+    expect(container.querySelector('.search-panel:not(.shortcut-sheet)')).toBeNull()
+  })
+
+  it('此前没测到的键真的生效：Home 回本章顶部、Ctrl+Home 跳书首、Ctrl+PageUp/Down 切章', async () => {
+    const { container } = await renderReader()
+    const scroller = container.querySelector('.reader-scroll') as HTMLElement
+    Object.defineProperty(scroller, 'clientHeight', { value: 600, configurable: true })
+    const scrollBy = vi.fn()
+    const scrollTo = vi.fn()
+    scroller.scrollBy = scrollBy as unknown as typeof scroller.scrollBy
+    scroller.scrollTo = scrollTo as unknown as typeof scroller.scrollTo
+
+    // 纯 Home = 只把正文滚回本章顶部，不跳章（Ctrl+Home 才是全书开头）
+    fireEvent.keyDown(window, { key: 'Home' })
+    expect(scrollTo).toHaveBeenLastCalledWith({ top: 0, behavior: 'auto' })
+    expect(scrollBy).not.toHaveBeenCalled()
+
+    // 跳章走的是 scrollIntoView，这里打桩记录被滚到的章号
+    const scrolled: string[] = []
+    const origScrollIntoView = Element.prototype.scrollIntoView
+    Element.prototype.scrollIntoView = function (this: Element) {
+      scrolled.push(this.getAttribute('data-chapter-index') ?? '')
+    } as typeof Element.prototype.scrollIntoView
+    try {
+      fireEvent.keyDown(window, { key: 'Home', ctrlKey: true })
+      await waitFor(() => expect(scrolled).toContain('0'))
+
+      scrolled.length = 0
+      fireEvent.keyDown(window, { key: 'PageDown', ctrlKey: true })
+      await waitFor(() => expect(scrolled).toContain('1'))
+
+      // Ctrl+PageUp：在正文区间起点上会被夹回区间内 → 不跳走（绝不该停在封面/目录页）。
+      // 更要紧的是它**不能掉进"普通 PageUp = 滚一屏"那条分支**：
+      // 那是修饰键分流失效的症状，而 jsdom 里 currentChapter 不会随滚动变化，
+      // 所以这里验的就是"没误触翻屏"这一条。
+      scrolled.length = 0
+      fireEvent.keyDown(window, { key: 'PageUp', ctrlKey: true })
+      await act(async () => {})
+      expect(scrolled).toEqual([])
+      expect(scrollBy).not.toHaveBeenCalled()
+
+      // 对照组：普通 PageUp 就该滚一屏（证明上面那条不是"这个键压根没接"）
+      fireEvent.keyDown(window, { key: 'PageUp' })
+      expect(scrollBy).toHaveBeenLastCalledWith({ top: -552, behavior: 'auto' })
+    } finally {
+      Element.prototype.scrollIntoView = origScrollIntoView
+    }
+  })
+
+  it('目录面板开着时方向键不滚正文（避免误操作）', async () => {
+    const { container } = await renderReader()
+    const scroller = container.querySelector('.reader-scroll') as HTMLElement
+    Object.defineProperty(scroller, 'clientHeight', { value: 600, configurable: true })
+    const scrollBy = vi.fn()
+    scroller.scrollBy = scrollBy as unknown as typeof scroller.scrollBy
+
+    fireEvent.click(screen.getByRole('button', { name: '目录' }))
+    await waitFor(() => expect(container.querySelector('.toc-panel')).toBeTruthy())
+
+    fireEvent.keyDown(window, { key: 'ArrowDown' })
+    expect(scrollBy).not.toHaveBeenCalled()
+  })
+
+  it('首次进阅读页弹一次轻引导，点它直接打开速查表', async () => {
+    await renderReader()
+    expect(screen.getByText('键盘也能翻书')).toBeInTheDocument()
+
+    // 提示语必须带下一步入口 —— 只说"有这个"等于没说
+    fireEvent.click(screen.getByText('键盘也能翻书'))
+    expect(await screen.findByRole('dialog', { name: HELP_NAME })).toBeInTheDocument()
+    // 找到入口了，引导收工
+    expect(screen.queryByText('键盘也能翻书')).toBeNull()
+  })
+
+  it('「不再提示」= 永久关掉；「×」= 只关掉本次会话', async () => {
+    const first = await renderReader()
+    expect(screen.getByText('键盘也能翻书')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '关闭提示' }))
+    await waitFor(() => expect(screen.queryByText('键盘也能翻书')).toBeNull())
+    first.unmount()
+
+    // 同一次会话（sessionStorage 还在）→ 不弹
+    const second = await renderReader()
+    expect(screen.queryByText('键盘也能翻书')).toBeNull()
+
+    // 换个会话（清掉会话标记，但没点过「不再提示」）→ 还会提示一次
+    second.unmount()
+    sessionStorage.clear()
+    const third = await renderReader()
+    expect(screen.getByText('键盘也能翻书')).toBeInTheDocument()
+
+    // 点了「不再提示」→ 再换会话也不再弹（localStorage 记的是永久）
+    fireEvent.click(screen.getByRole('button', { name: '不再提示' }))
+    await waitFor(() => expect(screen.queryByText('键盘也能翻书')).toBeNull())
+    third.unmount()
+
+    sessionStorage.clear()
+    await renderReader()
+    expect(screen.queryByText('键盘也能翻书')).toBeNull()
+  })
+})
