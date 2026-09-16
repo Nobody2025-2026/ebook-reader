@@ -4,7 +4,7 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
-## [待发布]
+## [0.1.6] — 2026-09-16
 
 ### 修复（Esc 键：打开搜索/书签面板后按 Esc 会整本书退出去）
 
