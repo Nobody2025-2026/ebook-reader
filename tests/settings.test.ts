@@ -17,12 +17,16 @@ import {
   MARGIN_CAP_VW,
   PAGE_MARGIN_MAX,
   PAGE_MARGIN_STEP,
+  THEME_CHOICES,
+  THEME_LABELS,
   contentWidthFactor,
   customFontValue,
   effectivePageMargin,
   fontStack,
   loadSettings,
   pageMarginCapPx,
+  resolveTheme,
+  systemPrefersDark,
 } from '../src/lib/settings'
 
 const mockedGet = get as ReturnType<typeof vi.fn>
@@ -288,5 +292,96 @@ describe('effectivePageMargin（实际生效留白）', () => {
       prev = cur
     }
     expect(prev).toBe(120)
+  })
+})
+
+// 主题跟随系统（P2-5）：默认「跟随系统」，系统深色时进阅读页就该是夜间；
+// 用户手点过某个具体主题之后就锁定，不再被系统日夜切换带走。
+describe('resolveTheme（auto 解析）', () => {
+  it("'auto' 跟随系统偏好：深色 → 夜间，浅色 → 日间", () => {
+    expect(resolveTheme('auto', true)).toBe('night')
+    expect(resolveTheme('auto', false)).toBe('day')
+  })
+
+  it('具体主题原样返回，不受系统偏好影响', () => {
+    expect(resolveTheme('night', false)).toBe('night')
+    expect(resolveTheme('sepia', true)).toBe('sepia')
+    expect(resolveTheme('day', true)).toBe('day')
+  })
+
+  it('解析结果里绝不会再出现 auto（否则会挂上 CSS 里不存在的 theme-auto）', () => {
+    for (const t of THEME_CHOICES) {
+      expect(resolveTheme(t, true)).not.toBe('auto')
+      expect(resolveTheme(t, false)).not.toBe('auto')
+    }
+  })
+})
+
+describe('THEME_CHOICES / THEME_LABELS', () => {
+  it('「跟随系统」排第一，且每个可选值都有中文标签', () => {
+    expect(THEME_CHOICES[0]).toBe('auto')
+    expect(THEME_CHOICES).toEqual(['auto', 'day', 'sepia', 'night'])
+    for (const t of THEME_CHOICES) {
+      expect(THEME_LABELS[t]).toBeTruthy()
+    }
+  })
+
+  it('默认主题是跟随系统，且默认没被锁定', () => {
+    expect(DEFAULT_SETTINGS.theme).toBe('auto')
+    expect(DEFAULT_SETTINGS.themeLocked).toBe(false)
+  })
+})
+
+describe('systemPrefersDark', () => {
+  it('拿不到 matchMedia（jsdom / 老浏览器）时当作浅色，不瞎猜深色', () => {
+    expect(typeof window.matchMedia).not.toBe('function')
+    expect(systemPrefersDark()).toBe(false)
+  })
+
+  it('有 matchMedia 时读它的 matches', () => {
+    const original = Object.getOwnPropertyDescriptor(window, 'matchMedia')
+    const stub = (dark: boolean) =>
+      Object.defineProperty(window, 'matchMedia', {
+        configurable: true,
+        writable: true,
+        value: () => ({ matches: dark }),
+      })
+    try {
+      stub(true)
+      expect(systemPrefersDark()).toBe(true)
+      stub(false)
+      expect(systemPrefersDark()).toBe(false)
+    } finally {
+      if (original) Object.defineProperty(window, 'matchMedia', original)
+      else Reflect.deleteProperty(window, 'matchMedia')
+    }
+  })
+})
+
+describe('loadSettings 主题迁移', () => {
+  it('从没存过设置 → 跟随系统 + 未锁定', async () => {
+    mockedGet.mockResolvedValue(undefined)
+    const s = await loadSettings()
+    expect(s.theme).toBe('auto')
+    expect(s.themeLocked).toBe(false)
+  })
+
+  it('老数据只有 theme、没有 themeLocked → 按「手动选过」处理，保住老用户的夜间', async () => {
+    mockedGet.mockResolvedValue({ theme: 'night' })
+    const s = await loadSettings()
+    expect(s.theme).toBe('night')
+    expect(s.themeLocked).toBe(true)
+  })
+
+  it('显式存了 themeLocked 就听它的（用户主动切回跟随系统）', async () => {
+    mockedGet.mockResolvedValue({ theme: 'auto', themeLocked: false })
+    const s = await loadSettings()
+    expect(s.theme).toBe('auto')
+    expect(s.themeLocked).toBe(false)
+  })
+
+  it('非法主题值回落「跟随系统」，不把界面挂成没有配色的状态', async () => {
+    mockedGet.mockResolvedValue({ theme: 'midnight' })
+    expect((await loadSettings()).theme).toBe('auto')
   })
 })

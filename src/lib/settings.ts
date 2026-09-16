@@ -6,7 +6,41 @@
 // 3. 只存用户改过的值，缺省走 DEFAULT，保证老数据兼容。
 import { get, set } from 'idb-keyval'
 
-export type Theme = 'day' | 'sepia' | 'night'
+/** 用户可选的主题。除三套具体配色外多一个 'auto'＝跟随系统深色偏好（P2-5）。 */
+export type Theme = 'auto' | 'day' | 'sepia' | 'night'
+
+/** 真正能挂到 DOM 上的主题。'auto' 必须先解析成其中之一（见 resolveTheme），
+ *  否则 `theme-auto` 这个 class 在 CSS 里不存在，页面会掉回"没有任何配色"的状态。 */
+export type ResolvedTheme = Exclude<Theme, 'auto'>
+
+/** 面板上渲染的主题选项（顺序即展示顺序，「跟随系统」放第一个＝默认）。 */
+export const THEME_CHOICES = ['auto', 'day', 'sepia', 'night'] as const
+
+export const THEME_LABELS: Record<Theme, string> = {
+  auto: '跟随系统',
+  day: '日间',
+  sepia: '护眼',
+  night: '夜间',
+}
+
+/**
+ * 把「主题选择」解析成实际要挂的三套配色之一。
+ * 'auto' → 系统偏好深色就给夜间，否则日间。
+ */
+export function resolveTheme(theme: Theme, prefersDark: boolean): ResolvedTheme {
+  if (theme !== 'auto') return theme
+  return prefersDark ? 'night' : 'day'
+}
+
+/**
+ * 系统是否偏好深色。
+ * matchMedia 拿不到（jsdom、很老的浏览器）时一律当作**否**：宁可先给日间，
+ * 也别在无从判断时赌一个深色 —— 猜错了是"白底变黑底"这种一眼可见的惊吓。
+ */
+export function systemPrefersDark(): boolean {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false
+  return window.matchMedia('(prefers-color-scheme: dark)').matches === true
+}
 
 // 字体：用直观中文名，内部是语义 key。老版本存的是 'serif'/'sans'，
 // 加载时做一次迁移（见 loadSettings 里的 normalize）。
@@ -35,6 +69,10 @@ export interface ReaderSettings {
   pageMargin: number // 正文左右留白，px（越大正文越窄）
   fontFamily: string // 内置字体 key，或 'cf:<family>'（自定义字体）
   theme: Theme
+  /** 用户是否**手动**选过主题。没选过才跟随系统；选过就尊重选择，
+   *  系统日夜切换事件不再改它（否则用户在浅色系统上显式选了夜间，
+   *  一进深色环境又被动变回夜间以外的东西，等于选择被无视）。 */
+  themeLocked: boolean
   customFonts: CustomFont[] // 用户上传的字体元数据（二进制存在独立 IDB key）
 }
 
@@ -97,7 +135,10 @@ export const DEFAULT_SETTINGS: ReaderSettings = {
   // 移动端（iOS / Android）压根没有这个字体文件，新用户一进设置就看到"不可用"。
   // 系统默认在四个平台上都是真实生效的，是唯一对所有设备都成立的默认值。
   fontFamily: 'system',
-  theme: 'day',
+  // 默认「跟随系统」（P2-5）：新用户不必先找到「夜间」按钮，
+  // 系统已是深色时进阅读页就是深色。显式选过就锁定（themeLocked）。
+  theme: 'auto',
+  themeLocked: false,
   customFonts: [],
 }
 
@@ -201,6 +242,13 @@ function normalizePageMargin(v: unknown): number {
   return Math.min(Math.max(0, Math.round(v)), PAGE_MARGIN_MAX)
 }
 
+/** 主题归一化：只认四个合法值，其余（含老版本没这个字段）回默认「跟随系统」。 */
+function normalizeTheme(v: unknown): Theme {
+  return typeof v === 'string' && (THEME_CHOICES as readonly string[]).includes(v)
+    ? (v as Theme)
+    : DEFAULT_SETTINGS.theme
+}
+
 export async function loadSettings(): Promise<ReaderSettings> {
   const stored = await get<Partial<ReaderSettings>>(KEY_SETTINGS)
   const merged: ReaderSettings = {
@@ -210,6 +258,12 @@ export async function loadSettings(): Promise<ReaderSettings> {
   }
   merged.fontFamily = normalizeFont(stored?.fontFamily)
   merged.pageMargin = normalizePageMargin(stored?.pageMargin)
+  merged.theme = normalizeTheme(stored?.theme)
+  // 迁移：老数据里存了具体主题、却没有 themeLocked 这个标记。
+  // 旧版面板只有日间/护眼/夜间三选一，存着的值只可能来自用户的显式点击
+  // （旧版默认也是 day，但默认值只有"改过任何设置"才会落盘，无从区分）。
+  // 一律按"手动选过"处理：宁可让老用户保持原来的观感，也不擅自把他切进跟随系统。
+  merged.themeLocked = stored?.themeLocked ?? stored?.theme !== undefined
   return merged
 }
 

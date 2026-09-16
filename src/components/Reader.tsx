@@ -42,10 +42,14 @@ import {
   DEFAULT_SETTINGS,
   FONT_KEYS,
   FONT_LABELS,
+  THEME_CHOICES,
+  THEME_LABELS,
   customFontValue,
   contentWidthFactor,
   effectivePageMargin,
   pageMarginCapPx,
+  resolveTheme,
+  systemPrefersDark,
   FONT_PROBE_FAMILIES,
   fontStack,
   loadSettings,
@@ -91,6 +95,27 @@ import {
 // 所以这里不再重复定义，直接复用 highlight.ts 的 BLOCK_SELECTOR。
 import { BLOCK_SELECTOR } from '../lib/highlight'
 
+/**
+ * 当前是否有一段**可用的**选区（触屏选词的判据，P0-1）。
+ *
+ * 要三个条件同时成立：
+ * - 非折叠：折叠＝只是放了个光标，不是选词；
+ * - rangeCount > 0：真有 Range 才能取坐标、算锚点（有些环境只给一个空的 Selection）；
+ * - getRangeAt 可用：选区的具体内容由 openSelectionPopover 读取。
+ *
+ * 只做判断不做副作用，方便在 touchstart/touchend 里随手调用。
+ */
+function hasUsableSelection(): boolean {
+  if (typeof window === 'undefined') return false
+  const sel = window.getSelection?.()
+  return (
+    !!sel &&
+    !sel.isCollapsed &&
+    sel.rangeCount > 0 &&
+    typeof sel.getRangeAt === 'function'
+  )
+}
+
 interface LoadedChapter {
   index: number
   html: string
@@ -119,6 +144,11 @@ export function Reader({ bookId, onExit }: Props) {
   const [viewportWidth, setViewportWidth] = useState(() =>
     typeof window === 'undefined' ? 0 : window.innerWidth,
   )
+  // 系统是否偏好深色（P2-5）。初值同步取一次，之后由 matchMedia 的 change 事件驱动 ——
+  // 系统在日落时自动切深色、或用户改系统设置，页面不用刷新就跟着走。
+  const [prefersDark, setPrefersDark] = useState(systemPrefersDark)
+  // 实际要挂到 .reader 上的主题：'auto' 在这里被解析成 day / night。
+  const resolvedTheme = resolveTheme(settings.theme, prefersDark)
   // 本屏的留白上限（桌面 = PAGE_MARGIN_MAX，手机按其屏宽的 12%）。
   // 渲染期算一次即可，纯函数无副作用；滑块的 max、注入值、提示文案共用它。
   const marginCap = pageMarginCapPx(viewportWidth)
@@ -147,6 +177,8 @@ export function Reader({ bookId, onExit }: Props) {
     left: number
     mode: 'create' | 'view'
     excerpt: string
+    /** 这次浮层是触屏划词弹出来的（P0-1）：定位规则与"要不要抢焦点"都跟着它变 */
+    fromTouch?: boolean
     anchor?: {
       chapterIndex: number
       blockIndex: number
@@ -294,6 +326,19 @@ export function Reader({ bookId, onExit }: Props) {
     const onResize = () => setViewportWidth(window.innerWidth)
     window.addEventListener('resize', onResize)
     return () => window.removeEventListener('resize', onResize)
+  }, [])
+
+  // 系统深色偏好变化（P2-5）。只有「跟随系统」时才看得出效果，但监听一直挂着：
+  // 为它做条件挂载／卸载要多一套分支，而这里只是听着一个媒体查询，代价可以忽略。
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return
+    const mq = window.matchMedia('(prefers-color-scheme: dark)')
+    // 老 Safari 的 MediaQueryList 只有 addListener（已废弃）。没有 addEventListener
+    // 就直接放弃实时跟随——初值仍是对的，只是不再随系统变化刷新。
+    if (typeof mq.addEventListener !== 'function') return
+    const onChange = (e: MediaQueryListEvent) => setPrefersDark(e.matches)
+    mq.addEventListener('change', onChange)
+    return () => mq.removeEventListener('change', onChange)
   }, [])
 
   // 打开书
@@ -538,6 +583,21 @@ export function Reader({ bookId, onExit }: Props) {
     })
   }, [])
 
+  /**
+   * 恢复默认排版（P2-4）。
+   *
+   * 只重置"看书的观感"（字号/行距/页边距/字体/主题，含 themeLocked → 回到跟随系统），
+   * **保留用户上传的自定义字体**：DEFAULT_SETTINGS.customFonts 是空数组，直接整体套用
+   * 会让已注册的字体从面板上消失 —— 二进制还在 IndexedDB 里，等于凭空"丢"了用户的文件。
+   */
+  const resetSettings = useCallback(() => {
+    setSettings((prev) => {
+      const next: ReaderSettings = { ...DEFAULT_SETTINGS, customFonts: prev.customFonts }
+      void saveSettings(next)
+      return next
+    })
+  }, [])
+
   // 自定义字体：隐藏的 file input + 选择/删除处理器
   const fileInputRef = useRef<HTMLInputElement | null>(null)
 
@@ -767,6 +827,76 @@ export function Reader({ bookId, onExit }: Props) {
     container.scrollBy({ top: dir * page, behavior: smooth ? 'smooth' : 'auto' })
   }, [])
 
+  //
+  // 框选 → **只弹确认浮层，不落库**。
+  // 之前是"一选中就立刻写进 IndexedDB"，用户框错一段（或只是想选中复制）
+  // 也会留下一条高亮，只能事后去面板里删 —— 这是本轮最被吐槽的一点。
+  // 现在改成显式确认：点「加高亮」才入库，取消/点别处/Esc 一律放弃。
+  //
+  // 两个入口共用它：桌面 mouseup（onMouseUp）与触屏 touchend（P0-1），
+  // 区别只在 fromTouch —— 见下面定位那段的说明。
+  const openSelectionPopover = useCallback(
+    (fromTouch = false) => {
+      const sel = typeof window !== 'undefined' ? window.getSelection?.() : null
+      // rangeCount / getRangeAt 都做存在性判断：有些环境（测试桩、极少见的浏览器）
+      // 只会给一个空壳 Selection，直接在它上面取 Range 会抛。
+      if (!sel || sel.isCollapsed || sel.rangeCount === 0) return
+      if (typeof sel.getRangeAt !== 'function') return
+      const range = sel.getRangeAt(0)
+      const anchorEl =
+        range.commonAncestorContainer.nodeType === Node.TEXT_NODE
+          ? range.commonAncestorContainer.parentElement
+          : (range.commonAncestorContainer as Element)
+      const article = anchorEl?.closest?.('article[data-chapter-index]') as HTMLElement | null
+      if (!article) return
+      const anchor: BlockAnchor | null = selectionToAnchor(article, sel)
+      if (!anchor) return
+      const chapterIndex = Number(article.getAttribute('data-chapter-index'))
+      // 与已有高亮完全重叠 → 提示，不再弹框重复创建
+      const dup = annotations.find(
+        (a) =>
+          a.chapterIndex === chapterIndex &&
+          a.blockIndex === anchor.blockIndex &&
+          a.startOffset === anchor.startOffset &&
+          a.endOffset === anchor.endOffset,
+      )
+      // jsdom 没实现 Range.getBoundingClientRect，浏览器里有；做存在性保护，
+      // 浮层定位拿不到真实坐标时退化为 (0,0)，不影响高亮本身。
+      let rectTop = 0
+      let rectLeft = 0
+      if (typeof range.getBoundingClientRect === 'function') {
+        const r = range.getBoundingClientRect()
+        // 触屏上 iOS/安卓的系统「复制/共享」气泡压在选区**上方**，
+        // 我们的浮层再挤上去就是两套菜单叠在一起；触屏改挂选区**下沿**。
+        // 桌面鼠标没有系统气泡要避，维持原样（贴选区上沿）。
+        rectTop = fromTouch ? r.bottom : r.top
+        rectLeft = r.left
+      }
+      sel.removeAllRanges()
+      if (dup) {
+        setToast('这段已经高亮过了')
+        return
+      }
+      setActiveAnn({
+        id: '',
+        top: rectTop + 8,
+        left: rectLeft,
+        mode: 'create',
+        excerpt: anchor.text,
+        fromTouch,
+        anchor: {
+          chapterIndex,
+          blockIndex: anchor.blockIndex,
+          startOffset: anchor.startOffset,
+          endOffset: anchor.endOffset,
+          text: anchor.text,
+        },
+      })
+      setNoteDraft('')
+    },
+    [annotations],
+  )
+
   // ---- 触屏手势（P0-3）----
   // 只认 touch：鼠标点正文有"选词/放光标/关浮层"的语义，
   // 若把鼠标点击也当翻页，选词点一下就翻页了，等于把 P1 的高亮功能废掉。
@@ -785,6 +915,22 @@ export function Reader({ bookId, onExit }: Props) {
 
       const end: TouchPoint = { x: t.clientX, y: t.clientY, t: Date.now() }
 
+      // 0) 触屏选词（P0-1）：手指抬起时若还留着一段非折叠选区，说明用户在划词加高亮。
+      //
+      // 这一条**必须排在滑动手势之前**，两个原因：
+      //   a) 手机上压根不会触发 mouseup —— 这里是移动端高亮的唯一入口。
+      //      原先走到第 3 步「有选区就 return」，等于把半数用户的核心功能挡在门外。
+      //   b) 拖动选区把手本身就是横向位移。若先走 detectSwipe，用户每拖一次把手
+      //      就会顺带翻一屏，选词根本没法完成。
+      // preventDefault 拦掉抬手后的合成 click（否则选词会连带点到底下的链接/高亮）。
+      // 注意：它拦不住 iOS 的系统「复制/共享」气泡，那是选区自身的产物 ——
+      // 我们的浮层因此改挂到选区**下沿**（见 openSelectionPopover 的 fromTouch）。
+      if (hasUsableSelection()) {
+        e.preventDefault()
+        openSelectionPopover(true)
+        return
+      }
+
       // 1) 左右滑动翻屏（纵向为主的是普通滚动，交给原生）
       const swipe = detectSwipe(start, end)
       if (swipe !== 'none') {
@@ -800,7 +946,9 @@ export function Reader({ bookId, onExit }: Props) {
       // 2) 落在链接 / 按钮 / 高亮 / 图片上的点按，一律交给原来的点击逻辑，
       //    不能"点脚注顺便翻一屏"
       if (target?.closest?.('a, button, mark, img, input, textarea, .ann-popover, .sel-popover')) return
-      // 3) 有选区说明用户在选词加高亮，别动
+      // 3) 上面已经把"有选区"当成选词处理掉了（第 0 步），这里只兜底一种情况：
+      //    选区在 touchend 之后才成型（部分浏览器先派发 touchend 再更新 selection），
+      //    此时同样不能翻页。
       const sel = typeof window !== 'undefined' ? window.getSelection?.() : null
       if (sel && !sel.isCollapsed) return
 
@@ -823,7 +971,7 @@ export function Reader({ bookId, onExit }: Props) {
       e.preventDefault()
       scrollPage(zone === 'next' ? 1 : -1, true)
     },
-    [scrollPage, tocOpen, settingsOpen, bookmarksOpen, searchOpen, exportOpen, closeAllPanels],
+    [scrollPage, openSelectionPopover, tocOpen, settingsOpen, bookmarksOpen, searchOpen, exportOpen, closeAllPanels],
   )
 
   // 侧栏一开就必须把顶栏叫回来，否则按钮被藏起来了还没法再点开
@@ -919,63 +1067,9 @@ export function Reader({ bookId, onExit }: Props) {
   // 字符级：选区 → 锚点(chapterIndex, blockIndex, startOffset, endOffset) → 存 IndexedDB。
   // 章节进 DOM 后由 applyHighlights 重绘 <mark>，任何重渲染都冲不掉（见 highlight.ts）。
   // 点已有高亮 → 浮层看/改/删笔记；框选 → 生成高亮并弹出笔记浮层。
-
   //
-  // 框选 → **只弹确认浮层，不落库**。
-  // 之前是"一选中就立刻写进 IndexedDB"，用户框错一段（或只是想选中复制）
-  // 也会留下一条高亮，只能事后去面板里删 —— 这是本轮最被吐槽的一点。
-  // 现在改成显式确认：点「加高亮」才入库，取消/点别处/Esc 一律放弃。
-  const openSelectionPopover = useCallback(() => {
-    const sel = window.getSelection()
-    if (!sel || sel.isCollapsed || sel.rangeCount === 0) return
-    const range = sel.getRangeAt(0)
-    const anchorEl =
-      range.commonAncestorContainer.nodeType === Node.TEXT_NODE
-        ? range.commonAncestorContainer.parentElement
-        : (range.commonAncestorContainer as Element)
-    const article = anchorEl?.closest?.('article[data-chapter-index]') as HTMLElement | null
-    if (!article) return
-    const anchor: BlockAnchor | null = selectionToAnchor(article, sel)
-    if (!anchor) return
-    const chapterIndex = Number(article.getAttribute('data-chapter-index'))
-    // 与已有高亮完全重叠 → 提示，不再弹框重复创建
-    const dup = annotations.find(
-      (a) =>
-        a.chapterIndex === chapterIndex &&
-        a.blockIndex === anchor.blockIndex &&
-        a.startOffset === anchor.startOffset &&
-        a.endOffset === anchor.endOffset,
-    )
-    // jsdom 没实现 Range.getBoundingClientRect，浏览器里有；做存在性保护，
-    // 浮层定位拿不到真实坐标时退化为 (0,0)，不影响高亮本身。
-    let rectTop = 0
-    let rectLeft = 0
-    if (typeof range.getBoundingClientRect === 'function') {
-      const r = range.getBoundingClientRect()
-      rectTop = r.top
-      rectLeft = r.left
-    }
-    sel.removeAllRanges()
-    if (dup) {
-      setToast('这段已经高亮过了')
-      return
-    }
-    setActiveAnn({
-      id: '',
-      top: rectTop + 8,
-      left: rectLeft,
-      mode: 'create',
-      excerpt: anchor.text,
-      anchor: {
-        chapterIndex,
-        blockIndex: anchor.blockIndex,
-        startOffset: anchor.startOffset,
-        endOffset: anchor.endOffset,
-        text: anchor.text,
-      },
-    })
-    setNoteDraft('')
-  }, [annotations])
+  // ⚠️ openSelectionPopover 的**定义**在下面「触屏手势」之前（它既是 mouseup 的处理器，
+  //    也是 touchend 的处理器，必须排在手势回调进依赖数组之前，否则踩 TDZ）。
 
   /** 确认加高亮：只有点了「加高亮」才真正写库（可同时带上笔记） */
   const confirmHighlight = useCallback(async () => {
@@ -1419,7 +1513,7 @@ export function Reader({ bookId, onExit }: Props) {
 
   return (
     <div
-      className={`reader theme-${settings.theme}${chromeHidden ? ' is-chrome-hidden' : ''}`}
+      className={`reader theme-${resolvedTheme}${chromeHidden ? ' is-chrome-hidden' : ''}`}
       // 顶栏收起后给它一个可发现性提示：手机用户不知道"点中间能叫回来"
       data-chrome-hidden={chromeHidden ? 'true' : undefined}
     >
@@ -1560,9 +1654,15 @@ export function Reader({ bookId, onExit }: Props) {
           } as React.CSSProperties}
         >
           {showRestoreHint && (
-            <div className="restore-hint">已回到上次阅读位置</div>
+            <div className="restore-hint" role="status" aria-live="polite">
+              已回到上次阅读位置
+            </div>
           )}
-          {bookmarkHint && <div className="restore-hint">{bookmarkHint}</div>}
+          {bookmarkHint && (
+            <div className="restore-hint" role="status" aria-live="polite">
+              {bookmarkHint}
+            </div>
+          )}
           {loaded.map((chapter) => (
             <article
               key={chapter.index}
@@ -1774,20 +1874,44 @@ export function Reader({ bookId, onExit }: Props) {
                   <span>主题</span>
                 </div>
                 <div className="settings-row">
-                  {([
-                    ['day', '日间'],
-                    ['sepia', '护眼'],
-                    ['night', '夜间'],
-                  ] as const).map(([t, label]) => (
+                  {/* 「跟随系统」排第一（P2-5）：它是默认值，新用户不必先找到
+                      「夜间」按钮 —— 系统已是深色时进阅读页就是深色。
+                      手点任何一个具体主题 = 显式选择，从此锁定，不再被系统日夜切换带走。 */}
+                  {THEME_CHOICES.map((t) => (
                     <button
                       key={t}
                       className={`settings-pill${settings.theme === t ? ' active' : ''}`}
-                      onClick={() => updateSettings({ theme: t })}
+                      aria-pressed={settings.theme === t}
+                      onClick={() =>
+                        updateSettings(
+                          t === 'auto'
+                            ? { theme: 'auto', themeLocked: false }
+                            : { theme: t, themeLocked: true },
+                        )
+                      }
                     >
-                      {label}
+                      {THEME_LABELS[t]}
                     </button>
                   ))}
                 </div>
+                {settings.theme === 'auto' && (
+                  <p className="settings-hint">
+                    正在跟随系统，当前显示为「{THEME_LABELS[resolvedTheme]}」。
+                  </p>
+                )}
+              </div>
+
+              {/* 恢复默认（P2-4）：滑到一半想回头，原先只能记住默认值一个个手调回来。
+                  刻意**不动自定义字体**——字体是用户上传的文件，清空元数据会让它从面板上
+                  凭空消失（二进制还在库里，等于丢文件）。 */}
+              <div className="settings-group settings-group--reset">
+                <button className="btn settings-reset" onClick={resetSettings}>
+                  恢复默认排版
+                </button>
+                <p className="settings-hint">
+                  字号 {DEFAULT_SETTINGS.fontSize}px · 行距 {DEFAULT_SETTINGS.lineHeight} ·
+                  页边距 {DEFAULT_SETTINGS.pageMargin}px · 字体与主题回到初始（自定义字体保留）
+                </p>
               </div>
             </div>
           </aside>
@@ -1994,7 +2118,15 @@ export function Reader({ bookId, onExit }: Props) {
           </aside>
         )}
 
-        {toast && <div className="export-toast">{toast}</div>}
+        {/* 结果提示（P1-2）：这几条之前是纯 <div>，读屏用户完全听不到
+            （"导出完了没""这段是不是已经高亮过"全成了静默操作）。
+            对齐 Library 的 shelf-toast：role=status + aria-live=polite，
+            不打断当前朗读、等一句读完再播报。 */}
+        {toast && (
+          <div className="export-toast" role="status" aria-live="polite">
+            {toast}
+          </div>
+        )}
 
         {activeAnn && (
           <div
@@ -2002,7 +2134,10 @@ export function Reader({ bookId, onExit }: Props) {
             style={{ position: 'fixed', top: activeAnn.top, left: Math.min(activeAnn.left, window.innerWidth - 320) }}
           >
             <div className="ann-popover__excerpt">{activeAnn.excerpt}</div>
-            {/* 颜色选择（P1-7）：create 时只是选色；view 时点了立刻改色 */}
+            {/* 颜色选择（P1-7 / P1-1）：create 时只是选色；view 时点了立刻改色。
+                色块上直接写语义文字（重点/疑问/待查/喜欢）—— 原先四个 26px 纯色圆点
+                对明眼色盲用户等于四个一样的灰点，只能靠猜。
+                读屏层本来就有 label，这次补的是**视觉层**（WCAG 1.4.1 非颜色传达）。 */}
             <div className="ann-popover__colors" role="group" aria-label="高亮颜色">
               {HIGHLIGHT_COLORS.map((c) => (
                 <button
@@ -2011,10 +2146,11 @@ export function Reader({ bookId, onExit }: Props) {
                   className={`ann-color${activeColor === c.key ? ' active' : ''}`}
                   data-color={c.key}
                   title={c.label}
-                  aria-label={c.label}
                   aria-pressed={activeColor === c.key}
                   onClick={() => void changeActiveColor(c.key)}
-                />
+                >
+                  {c.label}
+                </button>
               ))}
             </div>
             <textarea
@@ -2022,7 +2158,9 @@ export function Reader({ bookId, onExit }: Props) {
               value={noteDraft}
               onChange={(e) => setNoteDraft(e.target.value)}
               placeholder={activeAnn.mode === 'create' ? '写点笔记（可留空）…' : '写点笔记…'}
-              autoFocus={activeAnn.mode === 'create'}
+              // 触屏弹出来的浮层**不抢焦点**：一抢就弹起软键盘，正好盖住浮层本身
+              // （想写笔记的用户自己点一下输入框即可）。桌面维持原样，鼠标端敲笔记更顺。
+              autoFocus={activeAnn.mode === 'create' && !activeAnn.fromTouch}
             />
             <div className="ann-popover__actions">
               {activeAnn.mode === 'create' ? (

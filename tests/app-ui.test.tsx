@@ -2,7 +2,7 @@
 // 解析层在这里被 mock 掉——它已经在 real-book.test.ts 里用真书验过了，
 // 这里只关心"书存得进、读得出、进度记得住"。
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { clear } from 'idb-keyval'
+import { clear, get } from 'idb-keyval'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { Library, UNDO_DELETE_MS } from '../src/components/Library'
 import { Reader } from '../src/components/Reader'
@@ -41,7 +41,7 @@ import {
   saveProgress,
   type BookMeta,
 } from '../src/lib/storage'
-import { PAGE_MARGIN_MAX, pageMarginCapPx } from '../src/lib/settings'
+import { DEFAULT_SETTINGS, PAGE_MARGIN_MAX, pageMarginCapPx } from '../src/lib/settings'
 
 const { openEpubMock, mockBook, furnitureBook, divOnlyBook, linkBook } = vi.hoisted(() => {
   const openEpubMock = vi.fn()
@@ -424,6 +424,36 @@ describe('书库：移除书籍有确认、且可撤销', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  // P1-3：弹层是 aria-modal，但光有 autoFocus 只解决"进来时焦点在哪"——
+  // 按一下 Tab 焦点就跑到背景的书卡/排序控件上去了，键盘和读屏用户会迷路。
+  it('确认框里 Tab 焦点不逃到背景，且在弹层内回环', () => {
+    renderLibrary()
+    fireEvent.click(screen.getByRole('button', { name: '移除《测试书》' }))
+
+    const cancel = screen.getByRole('button', { name: '取消' })
+    const remove = screen.getByRole('button', { name: '移除' })
+    expect(cancel).toHaveFocus() // 进来先落在"安全"的那颗，回车不会误删
+
+    // 最后一颗按 Tab → 回到第一颗（不跳去背景）
+    remove.focus()
+    fireEvent.keyDown(remove, { key: 'Tab' })
+    expect(cancel).toHaveFocus()
+
+    // 第一颗按 Shift+Tab → 回到最后一颗
+    fireEvent.keyDown(cancel, { key: 'Tab', shiftKey: true })
+    expect(remove).toHaveFocus()
+  })
+
+  it('关掉确认框后焦点回到那个 ×（不掉到 body 上）', () => {
+    renderLibrary()
+    const trigger = screen.getByRole('button', { name: '移除《测试书》' })
+    fireEvent.click(trigger)
+    fireEvent.click(screen.getByRole('button', { name: '取消' }))
+
+    expect(screen.queryByRole('alertdialog')).toBeNull()
+    expect(trigger).toHaveFocus()
   })
 })
 
@@ -1053,6 +1083,58 @@ describe('阅读器', () => {
       expect(scrollBy).not.toHaveBeenCalled()
     })
 
+    // P0-1：手机上不会触发 mouseup，划词后弹浮层只能靠 touchend。
+    // 原先这里在有选区时直接 return —— 半数用户（手机端）的核心功能等于没有。
+    const selectFirstTwoChars = (scope: Element) => {
+      const p = scope.querySelector('article[data-chapter-index="0"] p') as HTMLElement
+      const range = document.createRange()
+      range.setStart(p.firstChild as Text, 0)
+      range.setEnd(p.firstChild as Text, 2) // "c1"
+      const sel = window.getSelection()!
+      sel.removeAllRanges()
+      sel.addRange(range)
+    }
+
+    it('划词松手弹出「加高亮」浮层，且不翻页（P0-1）', async () => {
+      const { scroller, scrollBy } = await setup()
+      selectFirstTwoChars(scroller)
+
+      fireTouch(scroller, 'touchstart', 300, 300)
+      fireTouch(scroller, 'touchend', 300, 300)
+
+      await waitFor(() => expect(screen.getByText('加高亮')).toBeInTheDocument())
+      expect(scrollBy).not.toHaveBeenCalled()
+    })
+
+    it('划词 → 加高亮 → 落库（移动端高亮闭环）', async () => {
+      const { scroller } = await setup()
+      selectFirstTwoChars(scroller)
+
+      fireTouch(scroller, 'touchstart', 300, 300)
+      fireTouch(scroller, 'touchend', 300, 300)
+      await waitFor(() => expect(screen.getByText('加高亮')).toBeInTheDocument())
+
+      fireEvent.click(screen.getByText('加高亮'))
+      await waitFor(async () => {
+        const list = await listAnnotations('b1')
+        expect(list).toHaveLength(1)
+        expect(list[0].text).toBe('c1')
+      })
+    })
+
+    it('触摸划词不会被误判成滑动翻屏（拖选区把手不能顺带翻页）', async () => {
+      const { scroller, scrollBy } = await setup()
+      selectFirstTwoChars(scroller)
+
+      // 横向拖了 500px：只看位移会被 detectSwipe 判成"下一屏"，
+      // 但此时有选区 —— 那是用户在拖选区把手，不是在划页。
+      fireTouch(scroller, 'touchstart', 800, 300)
+      fireTouch(scroller, 'touchend', 300, 300)
+
+      await waitFor(() => expect(screen.getByText('加高亮')).toBeInTheDocument())
+      expect(scrollBy).not.toHaveBeenCalled()
+    })
+
     it('有选区时不翻页（选词加高亮不能顺带翻页）', async () => {
       const { scroller, scrollBy } = await setup()
       const spy = vi
@@ -1266,6 +1348,155 @@ describe('阅读器', () => {
       const scroller = container.querySelector('.reader-scroll') as HTMLElement
       expect(scroller.style.getPropertyValue('--reader-font-size')).toBe('22px')
     })
+  })
+})
+
+// 本轮无障碍/排版批次（产品复核的 Now 批次）：
+// P1-1 色盲可见标签、P1-2 aria-live、P2-4 恢复默认、P2-5 主题跟随系统。
+describe('阅读器：无障碍与排版（P1-1 / P1-2 / P2-4 / P2-5）', () => {
+  const renderReader = async () => {
+    await saveBook(meta, new File(['a'], 'book.epub'))
+    const utils = render(<Reader bookId="b1" onExit={vi.fn()} />)
+    await waitFor(() => expect(screen.getByText('c1 的正文')).toBeInTheDocument())
+    return utils
+  }
+
+  const openSettings = async () => {
+    fireEvent.click(screen.getByRole('button', { name: '排版' }))
+    await waitFor(() => expect(screen.getByText('字号')).toBeInTheDocument())
+  }
+
+  /** 划词 → 弹「加高亮」浮层（桌面路径：mouseup） */
+  const selectAndPop = async (container: HTMLElement) => {
+    const p = container.querySelector('article[data-chapter-index="0"] p') as HTMLElement
+    const range = document.createRange()
+    range.setStart(p.firstChild as Text, 0)
+    range.setEnd(p.firstChild as Text, 2)
+    const sel = window.getSelection()!
+    sel.removeAllRanges()
+    sel.addRange(range)
+    fireEvent.mouseUp(container.querySelector('.reader-scroll') as HTMLElement)
+    await waitFor(() => expect(screen.getByText('加高亮')).toBeInTheDocument())
+  }
+
+  /**
+   * 伪造 window.matchMedia（jsdom 压根没实现）。
+   * 返回一个 restore()，用例结束必须调用 —— 否则"系统是深色"会漏到后面的用例里。
+   */
+  const mockMatchMedia = (dark: boolean) => {
+    const original = Object.getOwnPropertyDescriptor(window, 'matchMedia')
+    Object.defineProperty(window, 'matchMedia', {
+      configurable: true,
+      writable: true,
+      value: (query: string) => ({
+        matches: query.includes('dark') ? dark : !dark,
+        media: query,
+        addEventListener: () => {},
+        removeEventListener: () => {},
+      }),
+    })
+    return () => {
+      if (original) Object.defineProperty(window, 'matchMedia', original)
+      else Reflect.deleteProperty(window, 'matchMedia')
+    }
+  }
+
+  it('四个高亮色块都带可见语义文字（明眼色盲用户不必靠颜色猜）', async () => {
+    const { container } = await renderReader()
+    await selectAndPop(container)
+
+    for (const label of ['重点', '疑问', '待查', '喜欢']) {
+      const btn = screen.getByRole('button', { name: label })
+      // 文字真的画在色块上，而不是只挂在 title/aria-label 里
+      expect(btn).toHaveTextContent(label)
+      expect(btn).toHaveAttribute('data-color')
+    }
+  })
+
+  it('结果提示是可播报的状态区（role=status + aria-live=polite）', async () => {
+    const { container } = await renderReader()
+    await selectAndPop(container)
+    fireEvent.click(screen.getByText('加高亮'))
+
+    const toast = await screen.findByText('已添加高亮')
+    expect(toast).toHaveAttribute('role', 'status')
+    expect(toast).toHaveAttribute('aria-live', 'polite')
+
+    // 书签提示用的是同一个 .restore-hint 样式，之前也是纯 <div>（读屏静默）
+    fireEvent.click(screen.getByRole('button', { name: '＋ 标记' }))
+    const bmHint = await screen.findByText(/点顶栏「书签」可查看/)
+    expect(bmHint).toHaveAttribute('role', 'status')
+    expect(bmHint).toHaveAttribute('aria-live', 'polite')
+  })
+
+  it('「已回到上次阅读位置」也是可播报的状态区', async () => {
+    await saveBook(meta, new File(['a'], 'book.epub'))
+    await saveProgress('b1', { chapterIndex: 1, blockIndex: 0, percent: 40, updatedAt: Date.now() })
+    render(<Reader bookId="b1" onExit={vi.fn()} />)
+
+    const hint = await screen.findByText('已回到上次阅读位置')
+    expect(hint).toHaveAttribute('role', 'status')
+    expect(hint).toHaveAttribute('aria-live', 'polite')
+  })
+
+  // P2-4：滑到一半想回头，原先只能记住默认值一个个手调回来
+  it('「恢复默认排版」把字号与主题一起还原，且真的落盘', async () => {
+    const { container } = await renderReader()
+    await openSettings()
+
+    const fontSize = screen.getByRole('slider', { name: '字号' }) as HTMLInputElement
+    fireEvent.change(fontSize, { target: { value: '26' } })
+    fireEvent.click(screen.getByRole('button', { name: '夜间' }))
+    await waitFor(() => expect(container.querySelector('.reader')).toHaveClass('theme-night'))
+
+    fireEvent.click(screen.getByRole('button', { name: '恢复默认排版' }))
+
+    await waitFor(() => {
+      expect((screen.getByRole('slider', { name: '字号' }) as HTMLInputElement).value).toBe(
+        String(DEFAULT_SETTINGS.fontSize),
+      )
+      // 主题也回到「跟随系统」→ jsdom 拿不到系统偏好 → 日间
+      expect(container.querySelector('.reader')).toHaveClass('theme-day')
+    })
+    await waitFor(async () => {
+      const saved = await get<Record<string, unknown>>('settings:reader')
+      expect(saved?.fontSize).toBe(DEFAULT_SETTINGS.fontSize)
+      expect(saved?.theme).toBe('auto')
+      expect(saved?.themeLocked).toBe(false)
+    })
+  })
+
+  // P2-5：默认跟随系统 —— 新用户不必先找到「夜间」按钮
+  it('默认跟随系统：系统偏好深色时进阅读页就是夜间', async () => {
+    const restore = mockMatchMedia(true)
+    try {
+      const { container } = await renderReader()
+      await waitFor(() => expect(container.querySelector('.reader')).toHaveClass('theme-night'))
+      await openSettings()
+      expect(screen.getByRole('button', { name: '跟随系统' })).toHaveAttribute(
+        'aria-pressed',
+        'true',
+      )
+    } finally {
+      restore()
+    }
+  })
+
+  it('手动选过主题就不再跟随系统（显式选择优先于系统偏好）', async () => {
+    const restore = mockMatchMedia(true)
+    try {
+      const { container } = await renderReader()
+      await openSettings()
+      fireEvent.click(screen.getByRole('button', { name: '日间' }))
+      await waitFor(() => expect(container.querySelector('.reader')).toHaveClass('theme-day'))
+      await waitFor(async () => {
+        const saved = await get<Record<string, unknown>>('settings:reader')
+        expect(saved?.theme).toBe('day')
+        expect(saved?.themeLocked).toBe(true)
+      })
+    } finally {
+      restore()
+    }
   })
 })
 

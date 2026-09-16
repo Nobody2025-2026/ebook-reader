@@ -59,6 +59,11 @@ export function Library({
   const [dragging, setDragging] = useState(false)
   // 待确认删除的书：点 × 先弹确认框，**不再一键直删**（删掉的是书+进度+书签+笔记+统计）
   const [confirmBook, setConfirmBook] = useState<LibraryBook | null>(null)
+  // 弹层本体与"谁把它叫出来的"（那个 × 按钮）。
+  // 焦点陷阱需要前者来划边界，关掉之后要能把焦点还回后者 ——
+  // 不还的话焦点掉到 body，键盘用户得从页首重新 Tab 一遍才能回到原位。
+  const dialogRef = useRef<HTMLDivElement | null>(null)
+  const confirmTriggerRef = useRef<HTMLElement | null>(null)
   // 撤销窗口内被"乐观移除"的书（仅用于渲染时隐藏，IndexedDB 里还没动）
   const [pendingBook, setPendingBook] = useState<LibraryBook | null>(null)
   // 计时器与"待落库的书"都放 ref：状态更新不该牵连计时器重建
@@ -81,6 +86,24 @@ export function Library({
     void onDeleteRef.current(pending.book.id)
   }, [])
 
+  /** 打开确认框，并记住是哪个 × 把它的叫出来的（关闭时要还焦点回去） */
+  const openConfirm = (book: LibraryBook, trigger: HTMLElement | null) => {
+    confirmTriggerRef.current = trigger
+    setConfirmBook(book)
+  }
+
+  /** 关闭确认框并把焦点还给触发按钮（P1-3） */
+  const closeConfirm = useCallback(() => {
+    setConfirmBook(null)
+    const trigger = confirmTriggerRef.current
+    confirmTriggerRef.current = null
+    // 触发按钮可能已经不在 DOM 里了（点「移除」后那张卡片被"乐观移除"）——
+    // 这时不硬聚焦，否则焦点反而被丢到 body 上。
+    // 同步聚焦是有意的：此刻弹层还挂着，先挪出去，下一帧 React 卸载弹层时
+    // 就不会把焦点一起带走。
+    if (trigger?.isConnected) trigger.focus()
+  }, [])
+
   /** 撤销：窗口内 IndexedDB 压根没写，所以只需取消计时器 + 让卡片重新显示 */
   const undoRemove = useCallback(() => {
     const pending = pendingRef.current
@@ -90,8 +113,44 @@ export function Library({
     setPendingBook(null)
   }, [])
 
+  /**
+   * 焦点陷阱（P1-3）：Tab / Shift+Tab 在弹层内循环。
+   *
+   * 弹层是 `aria-modal="true"`，但光有 autoFocus 只解决"进来时焦点在哪"——
+   * 按一下 Tab 焦点就跑到背景的书卡列表上去了，读屏/键盘用户会在
+   * "看不见的弹层"和"背景内容"之间迷路。这里把焦点圈死在弹层里。
+   * 纯 keydown 实现，不引 focus-trap 依赖（弹层里只有「取消 / 移除」两颗按钮）。
+   */
+  const handleDialogKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.key !== 'Tab') return
+    const dialog = dialogRef.current
+    if (!dialog) return
+    const focusables = Array.from(
+      dialog.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), [href], input:not([disabled]), select, textarea, [tabindex]:not([tabindex="-1"])',
+      ),
+    )
+    if (focusables.length === 0) return
+    const first = focusables[0]
+    const last = focusables[focusables.length - 1]
+    const active = document.activeElement
+    const inside = !!active && dialog.contains(active)
+    if (e.shiftKey) {
+      // 已在第一个（或焦点不知飘哪去了）→ 回环到最后一个
+      if (!inside || active === first) {
+        e.preventDefault()
+        last.focus()
+      }
+      return
+    }
+    if (!inside || active === last) {
+      e.preventDefault()
+      first.focus()
+    }
+  }
+
   const removeWithUndo = (book: LibraryBook) => {
-    setConfirmBook(null)
+    closeConfirm()
     // 只保留一个撤销窗口：上一个立即落库，避免"撤销"按钮指向哪本书产生歧义
     flushPending()
     const timer = window.setTimeout(() => {
@@ -121,11 +180,11 @@ export function Library({
   useEffect(() => {
     if (!confirmBook) return
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setConfirmBook(null)
+      if (e.key === 'Escape') closeConfirm()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [confirmBook])
+  }, [confirmBook, closeConfirm])
 
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault()
@@ -269,7 +328,7 @@ export function Library({
                 </div>
                 <button
                   className="book-delete"
-                  onClick={() => setConfirmBook(book)}
+                  onClick={(e) => openConfirm(book, e.currentTarget)}
                   aria-label={`移除《${book.title}》`}
                   title={`移除《${book.title}》`}
                 >
@@ -282,12 +341,14 @@ export function Library({
       )}
 
       {confirmBook && (
-        <div className="modal-backdrop" onClick={() => setConfirmBook(null)}>
+        <div className="modal-backdrop" onClick={closeConfirm}>
           <div
             className="confirm-dialog"
+            ref={dialogRef}
             role="alertdialog"
             aria-modal="true"
             aria-labelledby="confirm-delete-title"
+            onKeyDown={handleDialogKeyDown}
             onClick={(e) => e.stopPropagation()}
           >
             <h2 className="confirm-title" id="confirm-delete-title">
@@ -299,7 +360,9 @@ export function Library({
               移除后 8 秒内还能撤销。
             </p>
             <div className="confirm-actions">
-              <button className="btn" onClick={() => setConfirmBook(null)} autoFocus>
+              {/* autoFocus 给「取消」：进来先落在"安全"的那颗上，
+                  回车不会误删（误删要连点两下才成） */}
+              <button className="btn" onClick={closeConfirm} autoFocus>
                 取消
               </button>
               <button className="btn btn-danger" onClick={() => removeWithUndo(confirmBook)}>
@@ -311,7 +374,7 @@ export function Library({
       )}
 
       {pendingBook && (
-        <div className="shelf-toast" role="status">
+        <div className="shelf-toast" role="status" aria-live="polite">
           <span>已移除《{pendingBook.title}》</span>
           <button className="shelf-toast__undo" onClick={undoRemove}>
             撤销

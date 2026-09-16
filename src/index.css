@@ -1015,6 +1015,19 @@ body {
   border-style: dashed;
 }
 
+/* 恢复默认排版（P2-4）：面板最底下的收尾动作，做成整行宽度 +
+   上方一条分隔线，跟上面那些"调参数"的控件不在一个层级上，不会被手滑点中。 */
+.settings-group--reset {
+  margin-top: 4px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+  margin-bottom: 0;
+}
+
+.settings-reset {
+  width: 100%;
+}
+
 /* 主题色块预览 */
 .theme-swatch {
   display: flex;
@@ -1361,19 +1374,29 @@ body {
   padding-left: 8px;
 }
 
-/* ---- 高亮颜色选择（P1-7）---- */
+/* ---- 高亮颜色选择（P1-7 / P1-1）---- */
 .ann-popover__colors {
   display: flex;
   gap: 8px;
 }
 
+/* 色块上带语义文字（重点/疑问/待查/喜欢）。
+   原先是个 26px 纯色圆点：读屏层有 aria-label 兜着，但**视觉层**只靠颜色区分，
+   明眼色盲用户（约 8% 男性）看到的是四个一样的灰点，只能一个个点开试。
+   现在四颗等宽胶囊，颜色仍保留（所见即所得），文字提供"非颜色"线索。 */
 .ann-color {
-  width: 26px;
+  flex: 1;
   height: 26px;
   padding: 0;
   border: 2px solid transparent;
-  border-radius: 50%;
+  border-radius: 13px;
   cursor: pointer;
+  /* 文字色写死深色、不用 var(--fg)：夜间主题的 --fg 是浅灰，
+     压在浅黄/浅绿底上会糊成一片。四种高亮色都是浅色底，深字两套主题下都压得住。 */
+  color: #2b2b2b;
+  font-size: 12px;
+  line-height: 1;
+  white-space: nowrap;
 }
 
 /* 色块用与正文一致的色值（所见即所得），比正文略实一点便于辨认 */
@@ -1395,6 +1418,8 @@ body {
 
 .ann-color.active {
   border-color: var(--accent);
+  /* 非颜色线索：色盲用户看不出边框那圈紫，但看得出字变粗了 */
+  font-weight: 700;
 }
 
 .ann-color:focus-visible {
