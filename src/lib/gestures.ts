@@ -73,3 +73,24 @@ export function detectSwipe(start: TouchPoint, end: TouchPoint): 'prev' | 'next'
 
   return dx < 0 ? 'next' : 'prev'
 }
+
+/**
+ * 这台设备的**主要**输入方式是不是触摸。
+ *
+ * 用途：划词浮层的定位与"要不要抢焦点"都按它分流（触屏要避开系统菜单、
+ * 且不能弹软键盘）。用媒体查询而不是判 UA：
+ * - `hover: none` + `pointer: coarse` 描述的正是"手指为主、没有悬停指针"
+ * - 触屏笔记本接着鼠标时是 `hover: hover`，仍按桌面处理（它确实有鼠标）
+ * - 不依赖 UA 字符串，不会被浏览器伪装/新设备名打脸
+ *
+ * 拿不准（老环境没有 matchMedia）时返回 false：宁可当成桌面，
+ * 桌面那条路径只是"贴选区上沿 + 自动聚焦输入框"，不会坏事。
+ */
+export function prefersTouch(): boolean {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false
+  try {
+    return window.matchMedia('(hover: none) and (pointer: coarse)').matches
+  } catch {
+    return false
+  }
+}

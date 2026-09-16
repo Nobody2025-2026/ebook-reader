@@ -1354,6 +1354,13 @@ body {
   z-index: 20;
   width: 300px;
   max-width: calc(100vw - 24px);
+  /* 兜底：上下都塞不下时（极窄横屏、或选区本身就占满一屏）至少让内容能滚到，
+     「加高亮 / 取消」永远够得着。定位那层已经尽力避让了，这里是最后一道保险。
+     用 dvh 而不是 vh：手机 Safari 的地址栏伸缩会让 100vh 高于真实可视区，
+     正好把底部按钮顶到屏幕外——先写 vh 给老浏览器，再用 dvh 覆盖。 */
+  max-height: calc(100vh - 24px);
+  max-height: calc(100dvh - 24px);
+  overflow-y: auto;
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: 12px;

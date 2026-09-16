@@ -1135,6 +1135,53 @@ describe('阅读器', () => {
       expect(scrollBy).not.toHaveBeenCalled()
     })
 
+    // ---- 真机回归：划完词要"再点一次"才弹浮层（P0-1）----
+    //
+    // 真机（iPhone Safari / 安卓夸克 / 荣耀）实测：划完词浮层不出来，
+    // 得再点一下才弹，而且时灵时不灵。
+    //
+    // 下面这条复现的就是那个时序：浏览器**先派发 touchend，之后才更新 Selection**。
+    // 所以抬手那一刻读到的还是折叠选区，靠 touchend 触发必然扑空。
+    it('touchend 时选区还没成型，靠 selectionchange 兜底也能弹出（真机"要再点一次"的根因）', async () => {
+      const { scroller, scrollBy } = await setup()
+
+      // 1) 抬手：此时选区尚未成型（真机就是这样，浏览器还没更新 Selection）
+      fireTouch(scroller, 'touchstart', 300, 300)
+      fireTouch(scroller, 'touchend', 300, 300)
+      expect(screen.queryByText('加高亮')).toBeNull()
+
+      // 2) 浏览器随后把选区定稳并派发 selectionchange —— 兜底路径在这里接手
+      selectFirstTwoChars(scroller)
+      document.dispatchEvent(new Event('selectionchange'))
+
+      await waitFor(() => expect(screen.getByText('加高亮')).toBeInTheDocument(), {
+        timeout: 3000,
+      })
+      // 兜底弹浮层的同时，那次 touchend 也不能被当成"点按"去翻页
+      expect(scrollBy).not.toHaveBeenCalled()
+    })
+
+    it('手指还按在屏幕上时不弹浮层（拖选区手柄不能被打断在一半）', async () => {
+      const { scroller } = await setup()
+
+      // 手指按下并拖出选区，但**还没松手**
+      fireTouch(scroller, 'touchstart', 300, 300)
+      selectFirstTwoChars(scroller)
+      document.dispatchEvent(new Event('selectionchange'))
+
+      // 等过防抖窗口，浮层不应该出现：中途弹出会清掉选区，用户手一松发现手柄没了。
+      // 包 act 是因为这段等待里 floater 的定时器可能触发状态更新，
+      // 不包的话 React 会报 "not wrapped in act(...)"，把真正的失败信号淹掉。
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 400))
+      })
+      expect(screen.queryByText('加高亮')).toBeNull()
+
+      // 松手之后才轮到浮层登场
+      fireTouch(scroller, 'touchend', 300, 300)
+      await waitFor(() => expect(screen.getByText('加高亮')).toBeInTheDocument())
+    })
+
     it('有选区时不翻页（选词加高亮不能顺带翻页）', async () => {
       const { scroller, scrollBy } = await setup()
       const spy = vi
@@ -1411,6 +1458,73 @@ describe('阅读器：无障碍与排版（P1-1 / P1-2 / P2-4 / P2-5）', () => 
       expect(btn).toHaveTextContent(label)
       expect(btn).toHaveAttribute('data-color')
     }
+  })
+
+  // ---- 浮层不跟着内容走：滚动 / 开面板时必须收起（真机回归）----
+  // 浮层是 fixed 定位的，内容一滚它就悬在原地，和注释的那段字脱钩了。
+  // 同类产品（微信读书 / Kindle / 系统原生菜单）都是滚动即收起。
+
+  /** 在当前文档里重新圈出与 selectAndPop 相同的那段选区 */
+  const selectRangeIn = (container: HTMLElement) => {
+    const p = container.querySelector('article[data-chapter-index="0"] p') as HTMLElement
+    const range = document.createRange()
+    range.setStart(p.firstChild as Text, 0)
+    range.setEnd(p.firstChild as Text, 2)
+    const sel = window.getSelection()!
+    sel.removeAllRanges()
+    sel.addRange(range)
+  }
+
+  it('滚动正文时浮层自动收起', async () => {
+    const { container } = await renderReader()
+    await selectAndPop(container)
+
+    fireEvent.scroll(container.querySelector('.reader-scroll') as HTMLElement)
+
+    await waitFor(() => expect(screen.queryByText('加高亮')).toBeNull())
+  })
+
+  it('打开面板时浮层一并收起（不让两套浮层叠在一起）', async () => {
+    const { container } = await renderReader()
+    await selectAndPop(container)
+
+    fireEvent.click(screen.getByRole('button', { name: '排版' }))
+
+    await waitFor(() => expect(screen.queryByText('加高亮')).toBeNull())
+    await waitFor(() => expect(screen.getByText('字号')).toBeInTheDocument())
+  })
+
+  it('正在笔记框里打字时滚动不关浮层（软键盘引发的滚动不能吃掉输入）', async () => {
+    const { container } = await renderReader()
+    await selectAndPop(container)
+
+    const note = container.querySelector('.ann-popover__note') as HTMLTextAreaElement
+    note.focus()
+    fireEvent.change(note, { target: { value: '写了一半' } })
+
+    fireEvent.scroll(container.querySelector('.reader-scroll') as HTMLElement)
+
+    // 浮层还在，而且刚敲的字一个没丢
+    expect(screen.getByText('加高亮')).toBeInTheDocument()
+    expect(note.value).toBe('写了一半')
+  })
+
+  it('同一选区被重复上报时不重置浮层（别把用户写了一半的笔记清掉）', async () => {
+    const { container } = await renderReader()
+    await selectAndPop(container)
+
+    const note = container.querySelector('.ann-popover__note') as HTMLTextAreaElement
+    fireEvent.change(note, { target: { value: '写了一半' } })
+
+    // 浏览器针对**同一段**选区又派发了几次 selectionchange（真机上很常见）
+    selectRangeIn(container)
+    document.dispatchEvent(new Event('selectionchange'))
+    document.dispatchEvent(new Event('selectionchange'))
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 400))
+    })
+
+    expect(note.value).toBe('写了一半')
   })
 
   it('结果提示是可播报的状态区（role=status + aria-live=polite）', async () => {

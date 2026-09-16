@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { openEpub, type ChapterRef, type OpenedBook, type TocEntry } from '../lib/epub'
 import {
   chapterFromPercent,
@@ -79,9 +79,11 @@ import { extractBookTexts, searchChapters, type SearchHit } from '../lib/search'
 import {
   detectSwipe,
   isTap,
+  prefersTouch,
   resolveTapZone,
   type TouchPoint,
 } from '../lib/gestures'
+import { resolvePopoverPosition, type PopoverAnchorRect } from '../lib/popover'
 import { canvasProbe, detectFontAvailability } from '../lib/fontAvailability'
 import {
   estimateChapterRemainMinutes,
@@ -125,6 +127,21 @@ function hasUsableSelection(): boolean {
     typeof sel.getRangeAt === 'function'
   )
 }
+
+/**
+ * 触屏划词"选区定稳"的等待时长（selectionchange 兜底的防抖窗口）。
+ *
+ * 250ms 是权衡出来的：拖选区手柄时浏览器会连发 selectionchange，
+ * 太短会在手柄还没放稳时就抢着弹浮层（还会清掉选区，手感直接崩）；
+ * 太长则划完词要干等，像卡住了。
+ */
+const SELECTION_SETTLE_MS = 250
+
+/**
+ * 浮层宽度上限，必须与 index.css 里 `.ann-popover` 的 `width` 保持一致。
+ * 定位时要用它算左右边界，写岔了会让浮层在窄屏上贴错边。
+ */
+const POPOVER_WIDTH = 300
 
 interface LoadedChapter {
   index: number
@@ -186,8 +203,16 @@ export function Reader({ bookId, onExit }: Props) {
   // - mode='view'：点已有高亮弹出的编辑框（保存 / 删除 / 关闭）。
   const [activeAnn, setActiveAnn] = useState<{
     id: string
-    top: number
-    left: number
+    /**
+     * 锚点几何（视口 fixed 坐标）。
+     *
+     * 这里刻意**不存算好的 top**：浮层的最终位置要等它渲染出来、量到真实高度
+     * 才能定（"下面塞不下就翻上去"必须知道浮层多高）。存锚点、渲染时现算，
+     * 顺带让浮层能跟着窗口尺寸变化自我修正。
+     */
+    anchorTop: number
+    anchorBottom: number
+    anchorLeft: number
     mode: 'create' | 'view'
     excerpt: string
     /** 这次浮层是触屏划词弹出来的（P0-1）：定位规则与"要不要抢焦点"都跟着它变 */
@@ -200,6 +225,22 @@ export function Reader({ bookId, onExit }: Props) {
       text: string
     }
   } | null>(null)
+  // 浮层的实测高度：量到之前先按 0 算（useLayoutEffect 在绘制前跑，用户看不到中间态）
+  const [popH, setPopH] = useState(0)
+  const popRef = useRef<HTMLDivElement | null>(null)
+  /**
+   * 手指是否还按在屏幕上。
+   *
+   * selectionchange 兜底自动弹浮层时要用它把门：拖选区的两个手柄时浏览器会
+   * 持续派发 selectionchange，若中途把浮层弹出来（还会清掉选区），用户手一松
+   * 发现"选区没了、手柄也没了"，等于把选词过程打断在半路。
+   */
+  const touchingRef = useRef(false)
+  /** 上一次已经弹过浮层的选区签名，用于 selectionchange 去重（见 openSelectionPopover） */
+  const lastSelKeyRef = useRef('')
+  // activeAnn 的镜像：给事件回调读最新值用，避免把 activeAnn 塞进依赖数组导致监听器反复重挂
+  const activeAnnRef = useRef(activeAnn)
+  activeAnnRef.current = activeAnn
   const [noteDraft, setNoteDraft] = useState('')
   // 新框选要用的高亮颜色（P1-7）。刻意保留上一次的选择——连划几处同色时不至于每次重选。
   const [activeColor, setActiveColor] = useState<HighlightColorKey>(DEFAULT_HIGHLIGHT_COLOR)
@@ -761,8 +802,9 @@ export function Reader({ bookId, onExit }: Props) {
         const ann = annotations.find((a) => a.id === id)
         setActiveAnn({
           id,
-          top: rect.top + 8,
-          left: rect.left,
+          anchorTop: rect.top,
+          anchorBottom: rect.bottom,
+          anchorLeft: rect.left,
           mode: 'view',
           excerpt: ann?.text ?? markEl.textContent ?? '',
         })
@@ -810,6 +852,9 @@ export function Reader({ bookId, onExit }: Props) {
     setSearchOpen(false)
     setExportOpen(false)
     setHelpOpen(false)
+    // 笔记浮层也算"浮着的东西"：点遮罩 / 点正文 / 开别的面板时一并收起。
+    // 它不是面板（没有自己的开合状态），但留着它悬在半空同样碍事。
+    setActiveAnn(null)
   }, [])
 
   const togglePanel = useCallback(
@@ -820,6 +865,7 @@ export function Reader({ bookId, onExit }: Props) {
       setSearchOpen((v) => (name === 'search' ? !v : false))
       setHelpOpen((v) => (name === 'help' ? !v : false))
       setExportOpen(false)
+      setActiveAnn(null)
     },
     [],
   )
@@ -880,6 +926,16 @@ export function Reader({ bookId, onExit }: Props) {
       const anchor: BlockAnchor | null = selectionToAnchor(article, sel)
       if (!anchor) return
       const chapterIndex = Number(article.getAttribute('data-chapter-index'))
+
+      // 同一个选区只弹一次。
+      //
+      // 为什么需要：触屏划词现在有**两个**触发源（touchend 与 selectionchange 兜底），
+      // 而 selectionchange 一次划词会连发好几遍。不去重的话，每次回调都要
+      // setNoteDraft('')，用户刚敲了一半的笔记会被清空 —— 比"弹不出来"还气人。
+      const selKey = `${chapterIndex}:${anchor.blockIndex}:${anchor.startOffset}:${anchor.endOffset}`
+      const cur = activeAnnRef.current
+      if (cur && cur.mode === 'create' && lastSelKeyRef.current === selKey) return
+
       // 与已有高亮完全重叠 → 提示，不再弹框重复创建
       const dup = annotations.find(
         (a) =>
@@ -890,28 +946,28 @@ export function Reader({ bookId, onExit }: Props) {
       )
       // jsdom 没实现 Range.getBoundingClientRect，浏览器里有；做存在性保护，
       // 浮层定位拿不到真实坐标时退化为 (0,0)，不影响高亮本身。
-      let rectTop = 0
-      let rectLeft = 0
+      let rect: PopoverAnchorRect = { top: 0, bottom: 0, left: 0 }
       if (typeof range.getBoundingClientRect === 'function') {
         const r = range.getBoundingClientRect()
-        // 触屏上 iOS/安卓的系统「复制/共享」气泡压在选区**上方**，
-        // 我们的浮层再挤上去就是两套菜单叠在一起；触屏改挂选区**下沿**。
-        // 桌面鼠标没有系统气泡要避，维持原样（贴选区上沿）。
-        rectTop = fromTouch ? r.bottom : r.top
-        rectLeft = r.left
+        rect = { top: r.top, bottom: r.bottom, left: r.left }
       }
       sel.removeAllRanges()
       if (dup) {
         setToast('这段已经高亮过了')
         return
       }
+      lastSelKeyRef.current = selKey
       setActiveAnn({
         id: '',
-        top: rectTop + 8,
-        left: rectLeft,
+        anchorTop: rect.top,
+        anchorBottom: rect.bottom,
+        anchorLeft: rect.left,
         mode: 'create',
         excerpt: anchor.text,
-        fromTouch,
+        // 触屏判定交给设备能力，而不是"哪个事件调起来的"：
+        // 触屏上合成 mouseup、键盘辅助操作也可能触发这条路径，
+        // 光看调用点会把触屏设备误判成桌面（浮层就挂到系统菜单上去了）。
+        fromTouch: fromTouch || prefersTouch(),
         anchor: {
           chapterIndex,
           blockIndex: anchor.blockIndex,
@@ -932,12 +988,25 @@ export function Reader({ bookId, onExit }: Props) {
     const t = e.changedTouches[0]
     if (!t) return
     touchStartRef.current = { x: t.clientX, y: t.clientY, t: Date.now() }
+    // 手指按着 = 划词可能还在进行中。selectionchange 兜底要靠它把门，
+    // 免得拖选区手柄拖到一半，浮层跳出来把选区清掉（见下面那个 effect）。
+    touchingRef.current = true
+  }, [])
+
+  /** 触摸被系统打断（来电、手势返回、多指切走）——必须把门重新关上，否则兜底再也不弹 */
+  const handleTouchCancel = useCallback(() => {
+    touchStartRef.current = null
+    touchingRef.current = false
   }, [])
 
   const handleTouchEnd = useCallback(
     (e: React.TouchEvent<HTMLDivElement>) => {
       const start = touchStartRef.current
       touchStartRef.current = null
+      // 手指抬起 → 划词动作结束，selectionchange 兜底可以放行了。
+      // 这一幕很关键：touchend 时选区**常常还没成型**（见下面那个兜底 effect 的说明），
+      // 兜底那条路就是靠"手指已松开"这个信号，才敢在稍后替用户把浮层弹出来。
+      touchingRef.current = false
       const t = e.changedTouches[0]
       if (!start || !t) return
 
@@ -1011,6 +1080,86 @@ export function Reader({ bookId, onExit }: Props) {
       closeAllPanels,
     ],
   )
+
+  // ---- 触屏划词的兜底触发：不赌 touchend 那一帧（P0-1 真机回归）----
+  //
+  // 真机实测（iPhone Safari / 安卓夸克 / 荣耀浏览器）三个问题里最要命的一个：
+  // 划完词**得再点一下**才弹浮层，而且时灵时不灵，iOS 尤其难触发。
+  //
+  // 根因是**时间竞速**：触屏划词的选区是异步成型的 —— 浏览器先派发 touchend，
+  // 之后才更新 Selection、才弹系统菜单。抬手那一瞬间 getSelection() 还是折叠的，
+  // hasUsableSelection() 为 false，于是掉进后面的"点按"分支（收顶栏 / 翻页），
+  // 浮层压根没机会出现。用户再点一下，这时选区已成型，才终于弹出来。
+  // iOS 上这个窗口最大，所以它最难触发 —— 和真机反馈完全吻合。
+  //
+  // 修法：补一条 selectionchange 兜底，选区一稳定就自己弹，不再跟浏览器抢时间。
+  // 两道必须的门：
+  //   a) 手指还按在屏幕上时不弹。拖选区手柄会连发 selectionchange，
+  //      中途弹出浮层（还会清掉选区）＝ 把选词过程打断在半路，手柄都不见了；
+  //   b) 防抖 250ms，等选区定稳，避免拖到一半抢跑。
+  useEffect(() => {
+    if (typeof document === 'undefined') return
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const onSelectionChange = () => {
+      if (timer != null) clearTimeout(timer)
+      timer = setTimeout(() => {
+        timer = null
+        if (touchingRef.current) return
+        if (!hasUsableSelection()) return
+        openSelectionPopover()
+      }, SELECTION_SETTLE_MS)
+    }
+    document.addEventListener('selectionchange', onSelectionChange)
+    return () => {
+      if (timer != null) clearTimeout(timer)
+      document.removeEventListener('selectionchange', onSelectionChange)
+    }
+  }, [openSelectionPopover])
+
+  // ---- 正文一滚动就收起笔记浮层 ----
+  //
+  // 浮层是 fixed 定位的，**不跟着内容走**：用户一滚动/一翻页，它还悬在原地，
+  // 和它要注释的那段文字已经脱钩了。留着只会让人以为"卡住了"，
+  // 或者手一滑点到「加高亮」，把高亮加到已经翻走的那一段上。
+  // 同类产品（微信读书 / Kindle / 系统原生菜单）都是滚动即收起，跟着做不会错。
+  //
+  // 唯一的例外：笔记框里**已经写了东西**时不动它。软键盘弹起/收起会引发视口与
+  // 滚动变化，照关不误的话，用户会被自己的输入动作关掉写了一半的笔记。
+  // 注意条件用的是"有内容"而不是"有焦点"：桌面端浮层会自动聚焦输入框
+  // （鼠标端敲笔记更顺），那种情况下用户什么都没写，滚动就该照常收起 ——
+  // 只认焦点会让桌面端的浮层永远关不掉。
+  // （浮层内部的滚动不会冒泡到正文容器，天然不受影响，不用额外挡。）
+  //
+  // 依赖 status：容器是 status==='ready' 之后才挂载的，ref 到位了才挂得上监听。
+  useEffect(() => {
+    const container = containerRef.current
+    if (!container) return
+    const onScroll = () => {
+      if (!activeAnnRef.current) return
+      const el = document.activeElement as HTMLInputElement | HTMLTextAreaElement | null
+      const typing =
+        !!el &&
+        (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT') &&
+        typeof el.value === 'string' &&
+        el.value.trim().length > 0
+      if (typing) return
+      setActiveAnn(null)
+    }
+    container.addEventListener('scroll', onScroll, { passive: true })
+    return () => container.removeEventListener('scroll', onScroll)
+  }, [status])
+
+  // ---- 量浮层的真实高度，供定位判断"下面还塞不塞得下" ----
+  // useLayoutEffect 在浏览器绘制前同步跑，所以 setPopH 触发的重渲染
+  // 不会被用户看到：浮层不会先出现在错位置、再跳一下。
+  useLayoutEffect(() => {
+    if (!activeAnn) {
+      if (popH !== 0) setPopH(0)
+      return
+    }
+    const h = popRef.current?.offsetHeight ?? 0
+    if (h > 0 && h !== popH) setPopH(h)
+  }, [activeAnn, popH])
 
   // 侧栏一开就必须把顶栏叫回来，否则按钮被藏起来了还没法再点开
   useEffect(() => {
@@ -1615,6 +1764,22 @@ export function Reader({ bookId, onExit }: Props) {
     )
   }
 
+  // 浮层摆哪儿：渲染时现算（"下面塞不下就翻上去"必须先知道浮层多高，见 lib/popover.ts）。
+  // 首次渲染时 popH 还是 0，会先按"下面放得下"摆一次；useLayoutEffect 紧接着
+  // 量到真实高度并在**绘制前**纠正 —— 用户看不到中间态，不会先错后跳。
+  const annPos = activeAnn
+    ? resolvePopoverPosition(
+        {
+          top: activeAnn.anchorTop,
+          bottom: activeAnn.anchorBottom,
+          left: activeAnn.anchorLeft,
+        },
+        // 宽度取 CSS 的实际上限：.ann-popover 是 width:300px + max-width:calc(100vw - 24px)
+        { width: Math.min(POPOVER_WIDTH, window.innerWidth - 24), height: popH },
+        { width: window.innerWidth, height: window.innerHeight },
+      )
+    : null
+
   return (
     <div
       className={`reader theme-${resolvedTheme}${chromeHidden ? ' is-chrome-hidden' : ''}`}
@@ -1759,6 +1924,7 @@ export function Reader({ bookId, onExit }: Props) {
           onClick={handleContentClick}
           onTouchStart={handleTouchStart}
           onTouchEnd={handleTouchEnd}
+          onTouchCancel={handleTouchCancel}
           onMouseUp={() => openSelectionPopover()}
           style={{
             '--reader-font-size': `${settings.fontSize}px`,
@@ -2345,7 +2511,11 @@ export function Reader({ bookId, onExit }: Props) {
         {activeAnn && (
           <div
             className="ann-popover"
-            style={{ position: 'fixed', top: activeAnn.top, left: Math.min(activeAnn.left, window.innerWidth - 320) }}
+            ref={popRef}
+            // 位置由 resolvePopoverPosition 算好（含"下方放不下就翻上去"），
+            // 不再是一句 top: rect.bottom + 8 —— 那正是手机划词靠底部时
+            // 浮层下半截被工具栏吃掉、「加高亮 / 取消」按不到的原因。
+            style={{ position: 'fixed', top: annPos?.top ?? 0, left: annPos?.left ?? 0 }}
           >
             <div className="ann-popover__excerpt">{activeAnn.excerpt}</div>
             {/* 颜色选择（P1-7 / P1-1）：create 时只是选色；view 时点了立刻改色。
