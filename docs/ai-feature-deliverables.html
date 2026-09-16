@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI 功能方案 · 交付总览（ebook-reader）</title>
+<style>
+  /* ===================== Design Tokens（复用阅读器官方变量） ===================== */
+  :root {
+    --bg: #f6f5f2;
+    --surface: #fffefb;
+    --fg: #2c2c2a;
+    --muted: #6b6a66;
+    --line: #e2e0d8;
+    --accent: #534ab7;
+    --danger: #a32d2d;
+
+    --radius-sm: 8px;
+    --radius-md: 12px;
+    --radius-lg: 14px;
+    --shadow-card: 0 8px 28px rgba(0,0,0,.08);
+    --accent-tint: color-mix(in srgb, var(--accent) 10%, var(--surface));
+    --accent-ring: color-mix(in srgb, var(--accent) 22%, transparent);
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font-family: system-ui, -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    background: var(--bg);
+    color: var(--fg);
+    line-height: 1.7;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap { max-width: 860px; margin: 0 auto; padding: 40px 22px 64px; }
+
+  /* ===================== 顶部总览 ===================== */
+  .hero {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-lg);
+    padding: 28px 28px 26px;
+    box-shadow: var(--shadow-card);
+  }
+  .hero__eyebrow {
+    font-size: 12px; letter-spacing: .08em; text-transform: uppercase;
+    color: var(--muted); margin: 0 0 8px;
+  }
+  .hero__title {
+    font-size: 28px; font-weight: 700; margin: 0 0 12px; letter-spacing: .01em;
+  }
+  .hero__conclusion {
+    margin: 0; font-size: 15px; color: var(--fg);
+    border-left: 3px solid var(--accent);
+    padding: 4px 0 4px 14px;
+    background: var(--accent-tint);
+    border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  }
+  .hero__conclusion b { color: var(--accent); }
+
+  /* ===================== 区块标题 ===================== */
+  .section { margin-top: 36px; }
+  .section__title {
+    font-size: 16px; font-weight: 600; margin: 0 0 14px;
+    display: flex; align-items: center; gap: 9px;
+  }
+  .section__title::before {
+    content: ""; width: 4px; height: 16px; border-radius: 2px;
+    background: var(--accent); display: inline-block;
+  }
+
+  /* ===================== 产物清单卡片 ===================== */
+  .cards { display: grid; grid-template-columns: 1fr; gap: 14px; }
+  @media (min-width: 680px) { .cards { grid-template-columns: 1fr 1fr; } }
+  .card {
+    background: var(--surface); border: 1px solid var(--line);
+    border-radius: var(--radius-md); padding: 16px 18px;
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  .card__head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .card__file {
+    font-family: ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
+    font-size: 13px; font-weight: 600; color: var(--fg);
+    word-break: break-all;
+  }
+  .card__file a { color: inherit; text-decoration: none; border-bottom: 1px dotted var(--line); }
+  .card__file a:hover { color: var(--accent); border-color: var(--accent); }
+  .badge {
+    flex: 0 0 auto; font-size: 11px; line-height: 1; padding: 5px 9px;
+    border-radius: 999px; background: var(--accent-tint); color: var(--accent);
+    font-weight: 600; white-space: nowrap;
+  }
+  .card__desc { margin: 0; font-size: 13px; color: var(--muted); }
+  .card--full { grid-column: 1 / -1; }
+
+  /* ===================== 如何查看 ===================== */
+  .steps {
+    background: var(--surface); border: 1px solid var(--line);
+    border-radius: var(--radius-md); padding: 6px 20px;
+  }
+  .steps li { font-size: 14px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+  .steps li:last-child { border-bottom: 0; }
+  .steps code {
+    font-family: ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
+    font-size: 12.5px; background: var(--bg); color: var(--accent);
+    padding: 1px 6px; border-radius: 5px;
+  }
+
+  /* ===================== 范围决策 ===================== */
+  .scope { display: grid; grid-template-columns: 1fr; gap: 12px; }
+  @media (min-width: 560px) { .scope { grid-template-columns: 1fr 1fr; } }
+  .scope__item {
+    background: var(--surface); border: 1px solid var(--line);
+    border-left: 3px solid var(--accent);
+    border-radius: var(--radius-sm); padding: 13px 16px;
+  }
+  .scope__k { font-size: 12px; color: var(--muted); margin: 0 0 3px; }
+  .scope__v { font-size: 14.5px; font-weight: 600; margin: 0; }
+
+  /* ===================== 质量结论 ===================== */
+  .quality {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+    background: var(--accent-tint); border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--line));
+    border-radius: var(--radius-md); padding: 14px 18px;
+  }
+  .quality__label { font-size: 13px; color: var(--muted); }
+  .quality__tag {
+    font-size: 12px; font-weight: 600; color: var(--accent);
+    background: var(--surface); border: 1px solid var(--line);
+    border-radius: 999px; padding: 5px 11px;
+  }
+  .quality__tag b { color: var(--accent); }
+
+  /* ===================== 原型快速预览 ===================== */
+  .preview-frame {
+    background: var(--surface); border: 1px solid var(--line);
+    border-radius: var(--radius-md); padding: 14px; overflow: hidden;
+  }
+  .preview-frame iframe {
+    width: 100%; height: 720px; border: 1px solid var(--line);
+    border-radius: var(--radius-sm); background: var(--bg); display: block;
+  }
+  .preview-note { font-size: 12px; color: var(--muted); margin: 10px 2px 0; }
+
+  .btn {
+    font-family: inherit; font-size: 13px; line-height: 1;
+    padding: 9px 15px; border-radius: var(--radius-sm);
+    background: var(--surface); border: 1px solid var(--line); color: var(--fg);
+    cursor: pointer; transition: border-color .15s, color .15s, background .15s;
+    display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+    text-decoration: none;
+  }
+  .btn:hover { border-color: var(--accent); color: var(--accent); }
+  .btn:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--accent-ring); }
+  .preview-actions { margin-top: 12px; display: flex; gap: 10px; flex-wrap: wrap; }
+
+  .footer {
+    margin-top: 40px; font-size: 12px; color: var(--muted);
+    text-align: center; border-top: 1px solid var(--line); padding-top: 18px;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- ============ 顶部总览 ============ -->
+  <header class="hero">
+    <p class="hero__eyebrow">ebook-reader · 设计原型专家团交付物</p>
+    <h1 class="hero__title">AI 功能方案 · 交付总览</h1>
+    <p class="hero__conclusion">
+      在本地优先阅读器加 AI，<b>MVP=划词翻译/解释</b>，<b>WebLLM+在线双引擎</b>，<b>双端</b>分发，复用既有视觉语言，成本本地零费用。
+    </p>
+  </header>
+
+  <!-- ============ 产物清单 ============ -->
+  <section class="section">
+    <h2 class="section__title">产物清单</h2>
+    <div class="cards">
+
+      <article class="card">
+        <div class="card__head">
+          <span class="card__file"><a href="ai-feature-solution.md">ai-feature-solution.md</a></span>
+          <span class="badge">已定稿</span>
+        </div>
+        <p class="card__desc">综合《AI 功能方案》主文档：设计 / 落地 / 开销 / 可行性 / 体验 / 路线图，含多张决策与成本表格。</p>
+      </article>
+
+      <article class="card">
+        <div class="card__head">
+          <span class="card__file"><a href="ai-feature-requirements.md">ai-feature-requirements.md</a></span>
+          <span class="badge">已审查</span>
+        </div>
+        <p class="card__desc">五维需求摘要：设计 / 落地 / 开销 / 可行性 / UX，附需用户拍板的范围决策清单。</p>
+      </article>
+
+      <article class="card card--full">
+        <div class="card__head">
+          <span class="card__file"><a href="ai-feature-prototype.html">ai-feature-prototype.html</a></span>
+          <span class="badge">已审查 21/25</span>
+        </div>
+        <p class="card__desc">可交互高保真原型（单文件、零外部依赖、双击即用）：划词浮层 / 对话侧栏 / 设置分节 / 隐私同意 / 三主题 / 响应式。</p>
+      </article>
+
+    </div>
+  </section>
+
+  <!-- ============ 如何查看 ============ -->
+  <section class="section">
+    <h2 class="section__title">如何查看</h2>
+    <ol class="steps">
+      <li>原型：双击 <code>ai-feature-prototype.html</code> 在浏览器打开；顶栏切三主题、正文选词唤出浮层、设置里点「在线 API」触发隐私同意。</li>
+      <li>方案/需求文档：用浏览器或任意 Markdown 编辑器打开 <code>ai-feature-solution.md</code> / <code>ai-feature-requirements.md</code>。</li>
+      <li>本页：<code>ai-feature-deliverables.html</code> 本身亦为零依赖单文件，双击即可在浏览器打开。</li>
+    </ol>
+  </section>
+
+  <!-- ============ 范围决策速览 ============ -->
+  <section class="section">
+    <h2 class="section__title">范围决策速览</h2>
+    <div class="scope">
+      <div class="scope__item">
+        <p class="scope__k">MVP 范围</p>
+        <p class="scope__v">仅划词翻译 / 解释 / 短摘要</p>
+      </div>
+      <div class="scope__item">
+        <p class="scope__k">推理引擎</p>
+        <p class="scope__v">WebLLM（本地）+ 在线 API 双线</p>
+      </div>
+      <div class="scope__item">
+        <p class="scope__k">分发目标</p>
+        <p class="scope__v">双端（桌面 + 网页版禁 Ollama）</p>
+      </div>
+      <div class="scope__item">
+        <p class="scope__k">AI 形态</p>
+        <p class="scope__v">划词浮层 + 对话侧栏 / 底部抽屉</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 质量结论 ============ -->
+  <section class="section">
+    <h2 class="section__title">质量结论</h2>
+    <div class="quality">
+      <span class="quality__label">原型审查结果：</span>
+      <span class="quality__tag">PASS <b>21/25</b></span>
+      <span class="quality__tag">Anti-Slop 通过</span>
+      <span class="quality__tag">P1 已修复</span>
+      <span class="quality__tag">可进入导出</span>
+    </div>
+  </section>
+
+  <!-- ============ 原型快速预览 ============ -->
+  <section class="section">
+    <h2 class="section__title">原型快速预览</h2>
+    <div class="preview-frame">
+      <iframe src="ai-feature-prototype.html" title="AI 功能可交互原型预览" loading="lazy"></iframe>
+      <p class="preview-note">内嵌预览使用同目录相对路径加载原型。若因浏览器本地 <code>file://</code> 限制未显示，请点击下方按钮在新标签打开。</p>
+      <div class="preview-actions">
+        <a class="btn" href="ai-feature-prototype.html" target="_blank" rel="noopener">在新标签打开原型 →</a>
+        <a class="btn" href="ai-feature-solution.md" target="_blank" rel="noopener">打开方案主文档 →</a>
+      </div>
+    </div>
+  </section>
+
+  <p class="footer">本地优先 EPUB 阅读器 · AI 功能交付包 ｜ 全部产物零外部依赖，无需联网即可查看</p>
+
+</div>
+</body>
+</html>

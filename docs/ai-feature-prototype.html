@@ -1,0 +1,775 @@
+<!--
+  原型构建师 · 筑原型 (Zhu)
+  设计系统：本地优先 EPUB 阅读器 (ebook-reader) 现有视觉语言 + AI 功能扩展令牌
+  类型：web-prototype（阅读器内嵌 AI 功能）/ 自包含单文件原型
+  说明：所有 CSS 内联于 <style>，交互逻辑内联于 <script>，无任何外部依赖，双击即可在浏览器打开。
+        三主题（日间/护眼/夜间）通过 <html class="theme-*"> 切换，全部配色由 :root 变量派生，AI 元素不写死颜色。
+-->
+<!DOCTYPE html>
+<html lang="zh-CN" class="theme-day">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ebook-reader · AI 功能原型（划词解释 / 翻译 / 摘要）</title>
+<style>
+  /* ===================== Reset & Base ===================== */
+  *, *::before, *::after { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html, body { margin: 0; padding: 0; }
+  html.theme-day, html.theme-sepia, html.theme-night { height: 100%; }
+  body {
+    font-family: system-ui, -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    background: var(--bg);
+    color: var(--fg);
+    -webkit-font-smoothing: antialiased;
+    transition: background .25s ease, color .25s ease;
+  }
+
+  /* ===================== Design Tokens ===================== */
+  :root {
+    /* 现有阅读器全局变量（日间默认） */
+    --bg: #f6f5f2;
+    --surface: #fffefb;
+    --fg: #2c2c2a;
+    --muted: #6b6a66;
+    --line: #e2e0d8;
+    --accent: #534ab7;
+    --danger: #a32d2d;
+
+    /* AI 功能派生令牌（全部由既有变量派生，不引入新色板） */
+    --ai-radius-bubble: 12px;
+    --ai-radius-input: 8px;
+    --ai-gap-msg: 12px;
+    --ai-pad-bubble: 12px 14px;
+    --ai-bar-w: 3px;
+    --shadow-modal: 0 18px 48px rgba(0,0,0,.22);
+    /* 以下 color-mix 派生令牌：上一行为极旧浏览器的固态回退，下一行现代浏览器覆盖 */
+    --accent-tint: #ebe8f3;
+    --accent-tint: color-mix(in srgb, var(--accent) 12%, var(--surface));
+    --accent-tint-soft: #f1f0f6;
+    --accent-tint-soft: color-mix(in srgb, var(--accent) 8%, var(--surface));
+    --accent-ring: rgba(83,74,183,.22);
+    --accent-ring: color-mix(in srgb, var(--accent) 22%, transparent);
+    --danger-tint: #f4e5e2;
+    --danger-tint: color-mix(in srgb, var(--danger) 12%, var(--surface));
+  }
+  /* 护眼主题（accent 不变） */
+  html.theme-sepia {
+    --bg: #f5ecd9;
+    --surface: #faf3e4;
+    --fg: #453b2e;
+    --muted: #6f6049;
+    --line: #e3d7bd;
+  }
+  /* 夜间主题（accent 提亮） */
+  html.theme-night {
+    --bg: #17171b;
+    --surface: #232328;
+    --fg: #d6d6de;
+    --muted: #9a9aa6;
+    --line: #35353d;
+    --accent: #a49cf8;
+    --danger: #e88b8b;
+  }
+
+  /* ===================== Reader Shell ===================== */
+  .reader { min-height: 100vh; display: flex; flex-direction: column; }
+
+  .reader-bar {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 12px; padding: 12px 20px;
+    background: var(--surface); border-bottom: 1px solid var(--line);
+    position: sticky; top: 0; z-index: 30;
+  }
+  .reader-bar__title { color: var(--muted); font-size: 14px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .reader-bar__actions { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+
+  .theme-switch {
+    display: flex; gap: 2px; background: var(--bg);
+    border: 1px solid var(--line); border-radius: 8px; padding: 3px;
+  }
+  .theme-btn {
+    border: 0; background: transparent; color: var(--muted);
+    font-size: 12px; padding: 5px 10px; border-radius: 6px; cursor: pointer;
+    font-family: inherit; transition: background .15s, color .15s;
+  }
+  .theme-btn:hover { color: var(--fg); }
+  .theme-btn.is-active { background: var(--surface); color: var(--fg); box-shadow: 0 1px 2px rgba(0,0,0,.06); }
+  .theme-btn:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--accent-ring); }
+
+  /* ===================== Buttons ===================== */
+  .btn {
+    font-family: inherit; font-size: 13px; line-height: 1;
+    padding: 8px 14px; border-radius: 8px;
+    background: var(--surface); border: 1px solid var(--line); color: var(--fg);
+    cursor: pointer; transition: border-color .15s, color .15s, background .15s;
+    display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  }
+  .btn:hover { border-color: var(--accent); color: var(--accent); }
+  .btn-ghost { background: transparent; border-color: transparent; }
+  .btn-ghost:hover { border-color: var(--accent); color: var(--accent); }
+  .btn:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--accent-ring); }
+
+  /* ===================== Main / Content / AI Panel ===================== */
+  .reader-main { flex: 1; display: flex; align-items: stretch; }
+
+  .reader-content {
+    flex: 1; width: 100%; max-width: 760px; margin: 0 auto;
+    padding: 40px 32px 90px; line-height: 1.9; font-size: 17px;
+  }
+  .chapter-eyebrow { color: var(--muted); font-size: 13px; margin: 0 0 6px; letter-spacing: .04em; }
+  .chapter-title { font-size: 26px; font-weight: 700; margin: 0 0 8px; letter-spacing: .02em; }
+  .chapter-hint { color: var(--muted); font-size: 13px; margin: 0 0 30px; }
+  .reader-content p { margin: 0 0 22px; }
+  .reader-content ::selection { background: var(--accent-tint); }
+
+  /* AI 面板（右侧固定栏 / 窄屏底部抽屉） */
+  .ai-panel {
+    width: 300px; flex: 0 0 300px;
+    background: var(--surface); border-left: 1px solid var(--line);
+    display: flex; flex-direction: column;
+    transition: transform .25s ease;
+  }
+  .reader:not(.ai-open) .ai-panel { display: none; }
+
+  .ai-panel__header {
+    flex: 0 0 auto; display: flex; align-items: center; gap: 10px;
+    padding: 14px 16px; border-bottom: 1px solid var(--line);
+  }
+  .ai-panel__title { font-weight: 600; font-size: 15px; }
+  .ai-panel__header .ai-engine { margin-left: auto; }
+  .ai-panel__close {
+    border: 0; background: transparent; color: var(--muted); font-size: 20px;
+    cursor: pointer; line-height: 1; padding: 2px 6px; border-radius: 6px;
+    flex-shrink: 0;
+  }
+  .ai-panel__close:hover { color: var(--fg); background: var(--bg); }
+
+  .ai-panel__body {
+    flex: 1; overflow-y: auto; padding: 16px;
+    display: flex; flex-direction: column; gap: var(--ai-gap-msg);
+  }
+  .ai-panel__input {
+    flex: 0 0 auto; border-top: 1px solid var(--line); padding: 12px;
+    display: flex; gap: 8px; align-items: flex-end;
+  }
+  .ai-input {
+    flex: 1; resize: none; font-family: inherit; font-size: 14px;
+    border: 1px solid var(--line); border-radius: var(--ai-radius-input);
+    background: var(--bg); color: var(--fg); padding: 9px 11px; max-height: 120px; line-height: 1.5;
+  }
+  .ai-input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-ring); }
+
+  /* 引擎指示 */
+  .ai-engine { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+  .ai-engine__dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); display: inline-block; }
+  .ai-engine__dot--api { background: transparent; border: 1px solid var(--muted); }
+
+  /* 消息气泡 */
+  .ai-msg {
+    padding: var(--ai-pad-bubble); border-radius: var(--ai-radius-bubble);
+    font-size: 14px; line-height: 1.6; max-width: 100%;
+  }
+  .ai-msg__role { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+  .ai-msg--ai {
+    background: var(--surface); border: 1px solid var(--line);
+    border-left: var(--ai-bar-w) solid var(--accent); align-self: flex-start;
+  }
+  .ai-msg--user {
+    background: var(--accent-tint); border: 1px solid transparent;
+    align-self: flex-end; text-align: left;
+  }
+  .ai-msg--user .ai-msg__role { text-align: right; }
+  .ai-msg--error {
+    background: var(--danger-tint); border: 1px solid transparent;
+    border-left: var(--ai-bar-w) solid var(--danger); align-self: flex-start;
+  }
+  .ai-msg--error .ai-msg__text { color: var(--fg); }
+  .ai-retry { margin-top: 8px; }
+
+  /* 流式光标 */
+  .ai-caret {
+    display: inline-block; width: 2px; height: 1.05em; background: var(--accent);
+    margin-left: 2px; vertical-align: -2px; animation: aiBlink 1s steps(2, start) infinite;
+  }
+  @keyframes aiBlink { 0%, 50% { opacity: 1; } 50.01%, 100% { opacity: 0; } }
+
+  /* 思考中…加载态（三点脉冲） */
+  .ai-msg--loading {
+    background: var(--surface); border: 1px solid var(--line);
+    align-self: flex-start; display: flex; align-items: center; gap: 8px;
+  }
+  .ai-typing { display: inline-flex; gap: 4px; }
+  .ai-typing span {
+    width: 6px; height: 6px; border-radius: 50%; background: var(--muted);
+    animation: aiPulse 1.2s infinite ease-in-out;
+  }
+  .ai-typing span:nth-child(2) { animation-delay: .18s; }
+  .ai-typing span:nth-child(3) { animation-delay: .36s; }
+  .ai-typing-text { color: var(--muted); font-size: 12px; }
+  @keyframes aiPulse {
+    0%, 60%, 100% { opacity: .3; transform: translateY(0); }
+    30% { opacity: 1; transform: translateY(-3px); }
+  }
+
+  /* ===================== 划词浮层 ===================== */
+  .ann-popover {
+    position: fixed; z-index: 50;
+    width: min(300px, calc(100vw - 24px));
+    background: var(--surface); border: 1px solid var(--line); border-radius: 12px;
+    box-shadow: 0 8px 28px rgba(0,0,0,.18); padding: 12px;
+  }
+  .ann-popover__excerpt {
+    border-left: 3px solid var(--accent); padding: 2px 0 2px 10px;
+    font-size: 13px; color: var(--muted); margin-bottom: 10px;
+    max-height: 72px; overflow: hidden; line-height: 1.5;
+  }
+  .ann-popover__actions { display: flex; gap: 8px; }
+  .ann-popover__ai { display: flex; gap: 8px; margin-top: 10px; }
+  .ann-popover__ai .btn, .ann-popover__actions .btn { min-height: 36px; flex: 1; }
+
+  /* ===================== 遮罩（移动端抽屉） ===================== */
+  .panel-backdrop { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.4); z-index: 40; }
+  .reader.ai-open .panel-backdrop { display: block; }
+  @media (min-width: 641px) { .panel-backdrop { display: none !important; } }
+
+  /* ===================== 弹窗（设置 / 隐私同意） ===================== */
+  .modal-backdrop {
+    position: fixed; inset: 0; background: rgba(0,0,0,.4); z-index: 60;
+    display: flex; align-items: center; justify-content: center; padding: 20px;
+  }
+
+  /* 设置面板 */
+  .settings-panel {
+    background: var(--surface); border-radius: 14px; box-shadow: var(--shadow-modal);
+    width: min(560px, 100%); max-height: 86vh; display: flex; flex-direction: column; overflow: hidden;
+  }
+  .settings-panel__header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 16px 20px; border-bottom: 1px solid var(--line);
+  }
+  .settings-panel__header h2 { margin: 0; font-size: 16px; font-weight: 600; }
+  .settings-panel__body { padding: 8px 20px 20px; overflow-y: auto; }
+
+  .settings-group { padding: 16px 0; border-bottom: 1px solid var(--line); }
+  .settings-group:last-child { border-bottom: 0; }
+  .settings-label { font-size: 13px; color: var(--muted); margin-bottom: 8px; }
+  .settings-value { font-size: 14px; }
+  .settings-pill-row { display: flex; gap: 8px; flex-wrap: wrap; }
+  .settings-pill {
+    font-family: inherit; font-size: 13px; padding: 8px 14px; border-radius: 8px;
+    background: var(--surface); border: 1px solid var(--line); color: var(--fg); cursor: pointer;
+    transition: border-color .15s, color .15s, background .15s;
+  }
+  .settings-pill:hover { border-color: var(--accent); color: var(--accent); }
+  .settings-pill.is-active { border-color: var(--accent); color: var(--accent); background: var(--accent-tint-soft); }
+  .settings-pill:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--accent-ring); }
+  .settings-note { font-size: 12px; color: var(--muted); margin-top: 8px; line-height: 1.7; }
+  .settings-input {
+    width: 100%; font-family: inherit; font-size: 14px; padding: 9px 11px;
+    border: 1px solid var(--line); border-radius: var(--ai-radius-input);
+    background: var(--bg); color: var(--fg);
+  }
+  .settings-input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-ring); }
+  select.settings-input { appearance: none; -webkit-appearance: none; }
+
+  /* 确认对话框（隐私同意） */
+  .confirm-dialog {
+    background: var(--surface); border-radius: 14px; box-shadow: var(--shadow-modal);
+    width: min(420px, 100%); padding: 22px;
+  }
+  .confirm-dialog__title { margin: 0 0 10px; font-size: 16px; font-weight: 600; }
+  .confirm-dialog__text { margin: 0 0 14px; font-size: 14px; color: var(--fg); line-height: 1.6; }
+  .confirm-dialog__check { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); margin-bottom: 18px; cursor: pointer; }
+  .confirm-dialog__actions { display: flex; justify-content: flex-end; gap: 10px; }
+
+  /* ===================== Toast ===================== */
+  .toast {
+    position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%) translateY(10px);
+    background: var(--fg); color: var(--surface); font-size: 13px;
+    padding: 10px 16px; border-radius: 8px; z-index: 80; opacity: 0;
+    transition: opacity .25s, transform .25s; pointer-events: none; max-width: 86vw;
+  }
+  .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+  /* ===================== 响应式：窄屏（<640px） ===================== */
+  @media (max-width: 640px) {
+    .reader:not(.ai-open) .ai-panel { display: flex; }
+    .ai-panel {
+      position: fixed; left: 0; right: 0; bottom: 0; top: auto;
+      width: auto; flex: none; max-height: 78vh;
+      border-left: 0; border-top: 1px solid var(--line);
+      border-radius: 14px 14px 0 0; transform: translateY(100%); z-index: 50;
+    }
+    .reader.ai-open .ai-panel { transform: translateY(0); }
+    .reader-content { padding: 28px 18px 90px; font-size: 16px; }
+    .reader-bar { flex-wrap: wrap; }
+    .reader-bar__title { width: 100%; order: -1; }
+    .reader-bar__actions { width: 100%; flex-wrap: wrap; }
+    .theme-switch { margin-right: auto; }
+  }
+
+  /* 尊重系统的"减少动态效果"偏好：关闭无限动画 */
+  @media (prefers-reduced-motion: reduce) {
+    .ai-caret, .ai-typing span { animation: none; }
+    .ai-caret { opacity: .9; }
+  }
+</style>
+</head>
+<body>
+
+<div class="reader ai-open" id="reader">
+
+  <!-- 顶栏 -->
+  <header class="reader-bar">
+    <div class="reader-bar__title">《时间的秩序》 · 第三章 纠缠的时间</div>
+    <div class="reader-bar__actions">
+      <div class="theme-switch" role="group" aria-label="主题切换">
+        <button class="theme-btn is-active" data-theme="day">日间</button>
+        <button class="theme-btn" data-theme="sepia">护眼</button>
+        <button class="theme-btn" data-theme="night">夜间</button>
+      </div>
+      <button class="btn btn-ghost" id="openSettings">AI 设置</button>
+      <button class="btn" id="toggleAI">AI 助手</button>
+    </div>
+  </header>
+
+  <div class="reader-main">
+
+    <!-- 阅读正文 -->
+    <article class="reader-content" id="readerContent">
+      <p class="chapter-eyebrow">第三章</p>
+      <h1 class="chapter-title">纠缠的时间</h1>
+      <p class="chapter-hint">选中正文任意片段，即可唤起划词面板，让 AI 解释、翻译或摘要。</p>
+
+      <p>在微观世界里，两个粒子可以发生一种奇特的关联，物理学家称之为量子纠缠。一旦两个粒子相互作用过，无论彼此相距多远，对其中一个的测量都会瞬间影响另一个的状态——这种关联像是预先写好的剧本，却不依赖任何可见的信号传递。</p>
+
+      <p>这种"幽灵般的超距作用"曾让爱因斯坦深感不安。他认为宇宙中不可能存在比光更快的影响，因此坚信纠缠背后一定隐藏着尚未被发现的"定域实在"。在他看来，量子力学只是不完备的描述，真正的秩序应当藏在更深层的变量之中。</p>
+
+      <p>然而数十年的实验表明，纠缠是真实存在的。它并不传递信息，却揭示了一个深刻的真相：在最基本的层面上，宇宙中的事物并非彼此独立，而是以我们无法直观想象的方式交织在一起。分离，或许只是宏观视角下的错觉。</p>
+
+      <p>更有意思的是，时间本身也可能源于纠缠。近年来一些理论物理学家提出，时间的"流动"感，或许只是大量粒子之间纠缠关系在时间切片上的投影。换句话说，我们感受到的"过去"与"未来"，也许只是这团纠缠网络的某种几何特征。</p>
+
+      <p>这给了我们一个全新的视角：时间也许不是宇宙舞台上的背景，而是舞台上演员彼此纠缠所浮现的集体现象。当我们理解了纠缠，或许也就触及了时间最深的秘密。</p>
+    </article>
+
+    <!-- AI 对话侧栏 -->
+    <aside class="ai-panel" id="aiPanel" aria-label="AI 助手">
+      <header class="ai-panel__header">
+        <div class="ai-panel__title">AI 助手</div>
+        <div class="ai-engine" id="aiEngine">
+          <span class="ai-engine__dot"></span>
+          <span class="ai-engine__label">本地 · WebLLM</span>
+        </div>
+        <button class="ai-panel__close" id="closeAI" aria-label="关闭">×</button>
+      </header>
+      <div class="ai-panel__body" id="aiBody"><!-- 消息由脚本填充 --></div>
+      <div class="ai-panel__input">
+        <textarea class="ai-input" id="aiInput" rows="1" placeholder="继续追问，或选中正文让 AI 解释…"></textarea>
+        <button class="btn" id="aiSend">发送</button>
+      </div>
+    </aside>
+
+  </div>
+
+  <!-- 移动端抽屉遮罩 -->
+  <div class="panel-backdrop" id="aiBackdrop"></div>
+</div>
+
+<!-- 划词浮层 -->
+<div class="ann-popover" id="annPopover" hidden>
+  <div class="ann-popover__excerpt" id="annExcerpt"></div>
+  <div class="ann-popover__actions">
+    <button class="btn btn-ghost">高亮</button>
+    <button class="btn btn-ghost">笔记</button>
+  </div>
+  <div class="ann-popover__ai">
+    <button class="btn" data-act="explain">解释</button>
+    <button class="btn btn-ghost" data-act="translate">翻译</button>
+    <button class="btn btn-ghost" data-act="summary">摘要</button>
+  </div>
+</div>
+
+<!-- 设置面板 -->
+<div class="modal-backdrop" id="settingsBackdrop" hidden>
+  <div class="settings-panel" role="dialog" aria-modal="true" aria-label="AI 设置">
+    <header class="settings-panel__header">
+      <h2>AI 设置</h2>
+      <button class="ai-panel__close" id="closeSettings" aria-label="关闭">×</button>
+    </header>
+    <div class="settings-panel__body">
+
+      <div class="settings-group">
+        <div class="settings-label">推理引擎</div>
+        <div class="settings-pill-row" id="engineRow">
+          <button class="settings-pill is-active" data-engine="local">WebLLM（本地）</button>
+          <button class="settings-pill" data-engine="api">在线 API</button>
+        </div>
+        <div class="settings-note">默认本地优先，零费用、零上传；在线 API 仅作兜底，需自备密钥，且首次使用须知情同意。</div>
+      </div>
+
+      <div class="settings-group">
+        <div class="settings-label">本地模型（WebLLM）</div>
+        <select class="settings-input" id="modelSelect" aria-label="本地模型">
+          <option>Qwen2.5-1.5B-Instruct</option>
+          <option>Qwen2.5-3B-Instruct</option>
+          <option>Llama-3.2-3B-Instruct</option>
+          <option>Phi-3.5-mini-instruct</option>
+        </select>
+        <div class="settings-note">模型在首次使用时于浏览器内下载，之后可离线运行。</div>
+      </div>
+
+      <div class="settings-group">
+        <div class="settings-label">在线 API 密钥</div>
+        <input class="settings-input" id="apiKey" type="password" placeholder="粘贴你的 API Key（本地保存，不上传）" autocomplete="off">
+        <div class="settings-note">密钥仅保存在本机浏览器，不会上传至任何服务器。未填写时，切换到在线引擎的回答会失败并提示配置。</div>
+      </div>
+
+      <div class="settings-group">
+        <div class="settings-label">本地优先说明</div>
+        <div class="settings-value">阅读是私人的事。本功能的默认路径完全在设备本地完成推理，不收取费用、不发送你的阅读内容。仅当你主动选择"在线 API"并确认知情同意后，选中的文本才会发送至第三方服务。</div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<!-- 隐私同意弹窗 -->
+<div class="modal-backdrop" id="consentBackdrop" hidden>
+  <div class="confirm-dialog" role="alertdialog" aria-modal="true" aria-label="隐私知情同意">
+    <h2 class="confirm-dialog__title">发送到第三方在线服务</h2>
+    <p class="confirm-dialog__text">选中的文本将发送至第三方在线服务，是否继续？</p>
+    <label class="confirm-dialog__check"><input type="checkbox" id="dontAsk"> 本次不再提示</label>
+    <div class="confirm-dialog__actions">
+      <button class="btn btn-ghost" id="consentCancel">取消</button>
+      <button class="btn" id="consentOk">继续</button>
+    </div>
+  </div>
+</div>
+
+<!-- Toast -->
+<div class="toast" id="toast" hidden></div>
+
+<script>
+(function () {
+  'use strict';
+
+  /* ---------- 通用工具 ---------- */
+  var $ = function (id) { return document.getElementById(id); };
+  var reader = $('reader');
+  var aiBody = $('aiBody');
+
+  function scrollAI() { aiBody.scrollTop = aiBody.scrollHeight; }
+
+  var toastTimer = null;
+  function toast(msg) {
+    var t = $('toast');
+    t.textContent = msg;
+    t.hidden = false;
+    requestAnimationFrame(function () { t.classList.add('show'); });
+    if (toastTimer) clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () {
+      t.classList.remove('show');
+      setTimeout(function () { t.hidden = true; }, 250);
+    }, 2200);
+  }
+
+  /* ---------- 流式输出（模拟 WebLLM 生成） ---------- */
+  function streamText(el, text) {
+    el.textContent = '';
+    var caret = document.createElement('span');
+    caret.className = 'ai-caret';
+    el.appendChild(caret);
+    var i = 0;
+    var timer = setInterval(function () {
+      if (i < text.length) {
+        caret.insertAdjacentText('beforebegin', text.charAt(i));
+        i++;
+      } else {
+        clearInterval(timer);
+        if (caret.parentNode) caret.remove();
+      }
+    }, 12);
+  }
+
+  /* ---------- 消息构造 ---------- */
+  function addUserMsg(text) {
+    var m = document.createElement('div');
+    m.className = 'ai-msg ai-msg--user';
+    m.innerHTML = '<div class="ai-msg__role">你</div><div class="ai-msg__text"></div>';
+    m.querySelector('.ai-msg__text').textContent = text;
+    aiBody.appendChild(m);
+    scrollAI();
+    return m;
+  }
+  function addAIMsg(text, stream) {
+    var m = document.createElement('div');
+    m.className = 'ai-msg ai-msg--ai';
+    var roleTxt = (currentEngine === 'api') ? 'AI · 在线 API' : 'AI · 本地 WebLLM';
+    m.innerHTML = '<div class="ai-msg__role">' + roleTxt + '</div><div class="ai-msg__text"></div>';
+    var t = m.querySelector('.ai-msg__text');
+    aiBody.appendChild(m);
+    scrollAI();
+    if (stream) streamText(t, text); else t.textContent = text;
+    return m;
+  }
+  function addLoading() {
+    var m = document.createElement('div');
+    m.className = 'ai-msg ai-msg--loading';
+    m.innerHTML = '<div class="ai-typing"><span></span><span></span><span></span></div><span class="ai-typing-text">思考中…</span>';
+    aiBody.appendChild(m);
+    scrollAI();
+    return m;
+  }
+  function addError(retryFn) {
+    var m = document.createElement('div');
+    m.className = 'ai-msg ai-msg--error';
+    m.innerHTML = '<div class="ai-msg__role">AI</div>' +
+      '<div class="ai-msg__text">在线 API 未配置密钥（API Key）。请先在「AI 设置」中填写，或切换回本地引擎后重试。</div>' +
+      '<button class="btn btn-ghost ai-retry">重试</button>';
+    m.querySelector('.ai-retry').addEventListener('click', retryFn);
+    aiBody.appendChild(m);
+    scrollAI();
+    return m;
+  }
+
+  /* ---------- 引擎状态 ---------- */
+  var currentEngine = 'local';
+  var consentGiven = false;
+  var persistDontAsk = false;
+  var pendingConsent = null;
+
+  function apiKeyConfigured() { return $('apiKey').value.trim().length > 0; }
+
+  function updateEngineIndicator() {
+    var el = $('aiEngine');
+    if (currentEngine === 'local') {
+      el.innerHTML = '<span class="ai-engine__dot"></span><span class="ai-engine__label">本地 · WebLLM</span>';
+    } else {
+      el.innerHTML = '<span class="ai-engine__dot ai-engine__dot--api"></span><span class="ai-engine__label">在线 API</span>';
+    }
+  }
+
+  function ensureConsent(cb, targetEngine) {
+    var eng = targetEngine || currentEngine;
+    if (eng === 'api' && !consentGiven && !persistDontAsk) {
+      pendingConsent = cb;
+      $('consentBackdrop').hidden = false;
+    } else {
+      cb();
+    }
+  }
+
+  /* ---------- 核心：发送一次 AI 请求 ---------- */
+  function attemptAI(userText, aiText) {
+    if (currentEngine === 'api' && !apiKeyConfigured()) {
+      var l = addLoading();
+      setTimeout(function () {
+        l.remove();
+        addError(function () { attemptAI(userText, aiText); });
+      }, 500);
+      return;
+    }
+    var loading = addLoading();
+    setTimeout(function () {
+      loading.remove();
+      addAIMsg(aiText, true);
+    }, 700);
+  }
+  function runAIPrompt(userText, aiText) {
+    ensureConsent(function () {
+      addUserMsg(userText);
+      attemptAI(userText, aiText);
+    });
+  }
+
+  /* ---------- 选中文本 → AI 回复内容 ---------- */
+  function buildResponse(act, text) {
+    var t = text.length > 30 ? text.slice(0, 30) + '…' : text;
+    if (act === 'explain') {
+      if (text.indexOf('量子纠缠') !== -1) {
+        return '量子纠缠指粒子相互作用后形成的整体关联：对其中一个的测量结果会即时对应另一个的状态，无论二者相距多远。它不传递可控信息，因此并不违背相对论的光速上限。';
+      }
+      return '针对「' + t + '」：在完整版本中，本地模型会结合上下文给出释义。此处为原型演示，展示的是结果呈现样式。';
+    }
+    if (act === 'translate') {
+      if (text.indexOf('量子纠缠') !== -1) return 'Quantum entanglement';
+      return '[英文示例] ' + t;
+    }
+    if (act === 'summary') {
+      return '这段内容可概括为：微观粒子之间存在超越距离的关联，这种关联不传递信息，却重塑了我们对"独立实体"与"时间"的理解。';
+    }
+    return '（本地模型输出示例）';
+  }
+
+  /* ---------- 主题切换 ---------- */
+  document.querySelectorAll('.theme-btn').forEach(function (b) {
+    b.addEventListener('click', function () {
+      var t = b.getAttribute('data-theme');
+      document.documentElement.className = 'theme-' + t;
+      document.querySelectorAll('.theme-btn').forEach(function (x) {
+        x.classList.toggle('is-active', x === b);
+      });
+    });
+  });
+
+  /* ---------- AI 面板开关 ---------- */
+  function setAIPanel(open) {
+    reader.classList.toggle('ai-open', open);
+    if (open) scrollAI();
+  }
+  $('toggleAI').addEventListener('click', function () {
+    setAIPanel(!reader.classList.contains('ai-open'));
+  });
+  $('closeAI').addEventListener('click', function () { setAIPanel(false); });
+  $('aiBackdrop').addEventListener('click', function () { setAIPanel(false); });
+
+  /* ---------- 设置弹窗 ---------- */
+  $('openSettings').addEventListener('click', function () { $('settingsBackdrop').hidden = false; });
+  $('closeSettings').addEventListener('click', function () { $('settingsBackdrop').hidden = true; });
+  $('settingsBackdrop').addEventListener('click', function (e) { if (e.target === this) this.hidden = true; });
+
+  /* ---------- 引擎选择（pill） ---------- */
+  document.querySelectorAll('[data-engine]').forEach(function (p) {
+    p.addEventListener('click', function () {
+      var eng = p.getAttribute('data-engine');
+      if (eng === 'api') {
+        ensureConsent(function () { setEngine('api'); }, 'api');
+      } else {
+        setEngine('local');
+      }
+    });
+  });
+  function setEngine(eng) {
+    currentEngine = eng;
+    document.querySelectorAll('[data-engine]').forEach(function (p) {
+      p.classList.toggle('is-active', p.getAttribute('data-engine') === eng);
+    });
+    updateEngineIndicator();
+    toast(eng === 'api' ? '已切换至在线 API（需自备密钥）' : '已切换至本地 WebLLM（零费用）');
+  }
+
+  /* ---------- 隐私同意弹窗 ---------- */
+  $('consentCancel').addEventListener('click', function () {
+    $('consentBackdrop').hidden = true;
+    pendingConsent = null;
+    toast('已取消，本次未发送到在线服务');
+  });
+  $('consentOk').addEventListener('click', function () {
+    consentGiven = true;
+    if ($('dontAsk').checked) persistDontAsk = true;
+    $('consentBackdrop').hidden = true;
+    var cb = pendingConsent;
+    pendingConsent = null;
+    $('dontAsk').checked = false;
+    if (cb) cb();
+  });
+  $('consentBackdrop').addEventListener('click', function (e) {
+    if (e.target === this && pendingConsent) { this.hidden = true; pendingConsent = null; }
+  });
+
+  /* ---------- 划词浮层 ---------- */
+  var pop = $('annPopover');
+  var content = $('readerContent');
+  var selText = '';
+
+  document.addEventListener('mouseup', function (e) {
+    if (pop.contains(e.target)) return;
+    var sel = window.getSelection();
+    var txt = sel.toString().trim();
+    if (txt.length > 0 && sel.anchorNode && content.contains(sel.anchorNode)) {
+      selText = txt;
+      var rect = sel.getRangeAt(0).getBoundingClientRect();
+      showPopover(rect);
+    } else {
+      hidePopover();
+    }
+  });
+
+  function showPopover(rect) {
+    $('annExcerpt').textContent = selText;
+    pop.hidden = false;
+    var pw = pop.offsetWidth, ph = pop.offsetHeight;
+    var vw = window.innerWidth, vh = window.innerHeight;
+    var top = rect.bottom + 8;
+    var left = rect.left + rect.width / 2 - pw / 2;
+    if (left < 8) left = 8;
+    if (left + pw > vw - 8) left = vw - pw - 8;
+    if (top + ph > vh - 8) top = rect.top - ph - 8;
+    if (top < 8) top = 8;
+    pop.style.top = top + 'px';
+    pop.style.left = left + 'px';
+  }
+  function hidePopover() { pop.hidden = true; }
+
+  window.addEventListener('scroll', hidePopover, true);
+  document.addEventListener('mousedown', function (e) {
+    if (!pop.contains(e.target)) hidePopover();
+  });
+
+  /* 原有动作：高亮 / 笔记 */
+  pop.querySelectorAll('.ann-popover__actions .btn').forEach(function (b) {
+    b.addEventListener('click', function () {
+      toast(b.textContent.trim() + '成功');
+      hidePopover();
+      window.getSelection().removeAllRanges();
+    });
+  });
+  /* 新增 AI 动作：解释 / 翻译 / 摘要 */
+  pop.querySelectorAll('.ann-popover__ai .btn').forEach(function (b) {
+    b.addEventListener('click', function () {
+      var act = b.getAttribute('data-act');
+      var labelMap = { explain: '解释', translate: '翻译', summary: '摘要' };
+      var label = labelMap[act];
+      var t = selText.length > 30 ? selText.slice(0, 30) + '…' : selText;
+      var userText = label + '：「' + t + '」';
+      var aiText = buildResponse(act, selText);
+      hidePopover();
+      setAIPanel(true);
+      runAIPrompt(userText, aiText);
+      window.getSelection().removeAllRanges();
+    });
+  });
+
+  /* ---------- 输入框发送（多轮追问） ---------- */
+  var aiInput = $('aiInput');
+  function sendInput() {
+    var v = aiInput.value.trim();
+    if (!v) return;
+    aiInput.value = '';
+    var aiText = '（本地模型）收到你的追问。在正式版本中，我会结合上方上下文继续作答；当前为原型演示，呈现象如上。';
+    runAIPrompt(v, aiText);
+  }
+  $('aiSend').addEventListener('click', sendInput);
+  aiInput.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendInput(); }
+  });
+
+  /* ---------- 初始演示对话（自动播放，呈现流式光标 + 思考中） ---------- */
+  var AI1 = '量子纠缠指粒子相互作用后形成的整体关联：对其中一个的测量结果会即时对应另一个的状态，无论二者相距多远。它不传递可控信息，因此并不违背相对论的光速上限。';
+  var AI2 = '并不矛盾。纠缠关联需在粒子分离前有过局部相互作用，后续相关性无法用来超光速发送信号，所以狭义相对论依然成立。';
+
+  function playInitial() {
+    addUserMsg('解释一下「量子纠缠」');
+    var l1 = addLoading();
+    setTimeout(function () {
+      l1.remove();
+      addAIMsg(AI1, true);
+      setTimeout(function () {
+        addUserMsg('它和相对论矛盾吗？');
+        var l2 = addLoading();
+        setTimeout(function () {
+          l2.remove();
+          addAIMsg(AI2, true);
+          scrollAI();
+        }, 800);
+      }, 900);
+    }, 800);
+  }
+
+  updateEngineIndicator();
+  playInitial();
+})();
+</script>
+</body>
+</html>
