@@ -14,6 +14,7 @@ import {
   listStats,
   saveBook,
   updateBookCover,
+  writeErrorText,
 } from './lib/storage'
 
 /** 正在补封面的书 id，避免 refresh 反复触发时重复解析同一本（70MB 书重复解很贵） */
@@ -129,7 +130,7 @@ export default function App() {
         setImportHint('')
         await refresh()
       } catch (err) {
-        setImportHint(`导入失败：${err instanceof Error ? err.message : String(err)}`)
+        setImportHint(writeErrorText(err, '导入书籍'))
       } finally {
         book?.destroy()
         setImporting(false)
@@ -140,17 +141,27 @@ export default function App() {
 
   const handleDelete = useCallback(
     async (id: string) => {
-      await deleteBook(id)
-      await refresh()
+      try {
+        await deleteBook(id)
+        await refresh()
+      } catch (err) {
+        // 删不掉必须说：一声不吭的话，用户看着书还在、却以为删了（或反过来）
+        setImportHint(writeErrorText(err, '删除书籍'))
+      }
     },
     [refresh],
   )
 
   const handleRestart = useCallback(
     async (id: string) => {
-      await clearProgress(id)
-      await refresh()
-      navigate(`/read/${encodeURIComponent(id)}`)
+      try {
+        await clearProgress(id)
+        await refresh()
+        navigate(`/read/${encodeURIComponent(id)}`)
+      } catch (err) {
+        // 进度没清掉就别进阅读页——否则用户翻回第一页才发现"从头读"没生效
+        setImportHint(writeErrorText(err, '清除进度'))
+      }
     },
     [refresh],
   )

@@ -28,6 +28,7 @@ import {
   addReadingSeconds,
   getStats,
   touchOpen,
+  writeErrorText,
   type Annotation,
 } from '../lib/storage'
 import {
@@ -249,6 +250,17 @@ export function Reader({ bookId, onExit }: Props) {
   const [exportChecked, setExportChecked] = useState<Record<string, boolean>>({})
   // 导出结果提示（原来完全没有反馈，被当成"没生效"）
   const [toast, setToast] = useState('')
+  /**
+   * 后台静默写（进度 / 阅读时长）失败的提示节流。
+   * 这类写每 30 秒来一次，次次弹提示等于骚扰；但一次都不说更糟——
+   * 用户关掉浏览器才发现进度没存上。所以**同一本书只提示一次**。
+   */
+  const silentWriteWarnedRef = useRef(false)
+  const warnSilentWrite = useCallback((err: unknown, label: string) => {
+    if (silentWriteWarnedRef.current) return
+    silentWriteWarnedRef.current = true
+    setToast(writeErrorText(err, label))
+  }, [])
 
   // ---- 单书全文搜索（P1）----
   const [searchOpen, setSearchOpen] = useState(false)
@@ -481,7 +493,8 @@ export function Reader({ bookId, onExit }: Props) {
         }
         if (!cancelled) {
           setStatus('ready')
-          void touchOpen(bookId)
+          // 失败了也别打断"把书打开"这件事，但要留一次回音（见 warnSilentWrite）
+          void touchOpen(bookId).catch((err) => warnSilentWrite(err, '记录阅读'))
         }
       } catch (err) {
         if (!cancelled) {
@@ -500,7 +513,7 @@ export function Reader({ bookId, onExit }: Props) {
       nodesRef.current.clear()
       hasRestoredRef.current = false
     }
-  }, [bookId, loadChapter])
+  }, [bookId, loadChapter, warnSilentWrite])
 
   // 收集所有 chapter 内的块级元素视口坐标
   const collectBlocks = useCallback((): BlockRect[] => {
@@ -551,8 +564,12 @@ export function Reader({ bookId, onExit }: Props) {
 
   const flushProgress = useCallback(() => {
     if (!latestProgress.current) return
-    void saveProgress(bookId, latestProgress.current)
-  }, [bookId])
+    // 进度是"悄悄存"的：失败时用户当下看不出来，等下次打开书才发现回到旧位置。
+    // 所以必须提示一次（同一本书只提示一次，见 warnSilentWrite）。
+    void saveProgress(bookId, latestProgress.current).catch((err) =>
+      warnSilentWrite(err, '保存进度'),
+    )
+  }, [bookId, warnSilentWrite])
 
   // 阅读时长统计（P1）：书进入 ready 后开始计时；切到后台/息屏暂停（不计），
   // 周期（30s）与卸载/退出时把已读时长持久化；切回前台/重新 ready 恢复计时。
@@ -565,7 +582,9 @@ export function Reader({ bookId, onExit }: Props) {
       if (readingStartRef.current == null) return
       const secs = Math.floor((Date.now() - readingStartRef.current) / 1000)
       if (secs > 0) {
-        void addReadingSeconds(bookId, secs)
+        void addReadingSeconds(bookId, secs).catch((err) =>
+          warnSilentWrite(err, '记录阅读时长'),
+        )
         // 同步给"剩余时间估算"用的那份（P1-2）：读得越久，速度估计越接近真实
         readSecondsRef.current += secs
         readingStartRef.current = Date.now()
@@ -587,7 +606,7 @@ export function Reader({ bookId, onExit }: Props) {
       document.removeEventListener('visibilitychange', onVisibility)
       flushReading()
     }
-  }, [status, bookId])
+  }, [status, bookId, warnSilentWrite])
 
   const handleScroll = useCallback(() => {
     const container = containerRef.current
@@ -1207,18 +1226,24 @@ export function Reader({ bookId, onExit }: Props) {
 
   const addCurrentBookmark = useCallback(async () => {
     const anchor = getCurrentAnchor()
-    const added = await addBookmark(bookId, {
-      id: newBookmarkId(),
-      chapterIndex: anchor.chapterIndex,
-      blockIndex: anchor.blockIndex,
-      excerpt: getBlockExcerpt(anchor.chapterIndex, anchor.blockIndex),
-      percent,
-      createdAt: Date.now(),
-    })
-    setBookmarks(await listBookmarks(bookId))
-    // 提示里直接告诉用户"去哪儿看"——原先只回一句"已添加书签"，
-    // 用户加完不知道在哪查看，只能干瞪眼（实测反馈）。
-    flashBookmarkHint(added ? '已添加书签 · 点顶栏「书签」可查看' : '这个位置已经有书签了')
+    try {
+      const added = await addBookmark(bookId, {
+        id: newBookmarkId(),
+        chapterIndex: anchor.chapterIndex,
+        blockIndex: anchor.blockIndex,
+        excerpt: getBlockExcerpt(anchor.chapterIndex, anchor.blockIndex),
+        percent,
+        createdAt: Date.now(),
+      })
+      setBookmarks(await listBookmarks(bookId))
+      // 提示里直接告诉用户"去哪儿看"——原先只回一句"已添加书签"，
+      // 用户加完不知道在哪查看，只能干瞪眼（实测反馈）。
+      flashBookmarkHint(added ? '已添加书签 · 点顶栏「书签」可查看' : '这个位置已经有书签了')
+    } catch (err) {
+      // 严格一致：没存进去就不刷新列表，更不能报"已添加"——
+      // 用户会以为存住了，下次打开书发现书签没了
+      setToast(writeErrorText(err, '添加书签'))
+    }
   }, [bookId, getCurrentAnchor, getBlockExcerpt, percent, flashBookmarkHint])
 
   // 书签列表一变就同步给 ref（handleScroll 读它判断按钮激活态）
@@ -1235,32 +1260,41 @@ export function Reader({ bookId, onExit }: Props) {
     const existing = bookmarks.find(
       (b) => b.chapterIndex === anchor.chapterIndex && b.blockIndex === anchor.blockIndex,
     )
-    if (existing) {
-      await removeBookmark(bookId, existing.id)
+    try {
+      if (existing) {
+        await removeBookmark(bookId, existing.id)
+        setBookmarks(await listBookmarks(bookId))
+        setAtBookmark(false) // 立刻反映到按钮上，不必等下一次滚动
+        flashBookmarkHint('已取消这个位置的书签')
+        return
+      }
+      const added = await addBookmark(bookId, {
+        id: newBookmarkId(),
+        chapterIndex: anchor.chapterIndex,
+        blockIndex: anchor.blockIndex,
+        excerpt: getBlockExcerpt(anchor.chapterIndex, anchor.blockIndex),
+        percent,
+        createdAt: Date.now(),
+      })
       setBookmarks(await listBookmarks(bookId))
-      setAtBookmark(false) // 立刻反映到按钮上，不必等下一次滚动
-      flashBookmarkHint('已取消这个位置的书签')
-      return
+      setAtBookmark(true) // 同上：点了就是"这个位置有书签"（重复添加时本来也有）
+      // 提示里直接告诉用户"去哪儿看"——原先只回一句"已添加书签"，
+      // 用户加完不知道在哪查看，只能干瞪眼（实测反馈）。
+      flashBookmarkHint(added ? '已添加书签 · 点顶栏「书签」可查看' : '这个位置已经有书签了')
+    } catch (err) {
+      // 同上：写失败就当没发生过，列表和按钮状态都不动
+      setToast(writeErrorText(err, existing ? '取消书签' : '添加书签'))
     }
-    const added = await addBookmark(bookId, {
-      id: newBookmarkId(),
-      chapterIndex: anchor.chapterIndex,
-      blockIndex: anchor.blockIndex,
-      excerpt: getBlockExcerpt(anchor.chapterIndex, anchor.blockIndex),
-      percent,
-      createdAt: Date.now(),
-    })
-    setBookmarks(await listBookmarks(bookId))
-    setAtBookmark(true) // 同上：点了就是"这个位置有书签"（重复添加时本来也有）
-    // 提示里直接告诉用户"去哪儿看"——原先只回一句"已添加书签"，
-    // 用户加完不知道在哪查看，只能干瞪眼（实测反馈）。
-    flashBookmarkHint(added ? '已添加书签 · 点顶栏「书签」可查看' : '这个位置已经有书签了')
   }, [bookId, bookmarks, getCurrentAnchor, getBlockExcerpt, percent, flashBookmarkHint])
 
   const removeBm = useCallback(
     async (id: string) => {
-      await removeBookmark(bookId, id)
-      setBookmarks(await listBookmarks(bookId))
+      try {
+        await removeBookmark(bookId, id)
+        setBookmarks(await listBookmarks(bookId))
+      } catch (err) {
+        setToast(writeErrorText(err, '删除书签'))
+      }
     },
     [bookId],
   )
@@ -1293,19 +1327,33 @@ export function Reader({ bookId, onExit }: Props) {
       color: activeColor,
       createdAt: Date.now(),
     }
-    const ok = await addAnnotation(bookId, ann)
-    if (ok) setAnnotations((prev) => [...prev, ann])
-    setActiveAnn(null)
-    setToast(note ? '已添加高亮和笔记' : '已添加高亮')
+    try {
+      const ok = await addAnnotation(bookId, ann)
+      if (ok) setAnnotations((prev) => [...prev, ann])
+      setActiveAnn(null)
+      setToast(note ? '已添加高亮和笔记' : '已添加高亮')
+    } catch (err) {
+      // 严格一致：**没存进库就不画到正文上**，也绝不说"已添加"——
+      // 界面上有、库里没有的分叉，会在下次打开书时凭空消失，比加不上更让人疑神疑鬼
+      setActiveAnn(null)
+      setToast(writeErrorText(err, '添加高亮'))
+    }
   }, [activeAnn, bookId, noteDraft, activeColor])
 
   /** 保存当前浮层里正在编辑的笔记（已有高亮的 view 模式） */
   const saveNote = useCallback(async () => {
     if (!activeAnn || activeAnn.mode !== 'view') return
-    await updateAnnotationNote(bookId, activeAnn.id, noteDraft)
-    setAnnotations((prev) => prev.map((a) => (a.id === activeAnn.id ? { ...a, note: noteDraft } : a)))
-    setActiveAnn(null)
-    setToast(noteDraft.trim() ? '笔记已保存' : '笔记已清空')
+    try {
+      await updateAnnotationNote(bookId, activeAnn.id, noteDraft)
+      setAnnotations((prev) =>
+        prev.map((a) => (a.id === activeAnn.id ? { ...a, note: noteDraft } : a)),
+      )
+      setActiveAnn(null)
+      setToast(noteDraft.trim() ? '笔记已保存' : '笔记已清空')
+    } catch (err) {
+      // 与"新建高亮"不同，这里是编辑已有内容：**保留浮层**，别把用户刚敲的笔记弄丢
+      setToast(writeErrorText(err, '保存笔记'))
+    }
   }, [activeAnn, bookId, noteDraft])
 
   /**
@@ -1318,8 +1366,12 @@ export function Reader({ bookId, onExit }: Props) {
       setActiveColor(color)
       if (!activeAnn || activeAnn.mode !== 'view' || !activeAnn.id) return
       const id = activeAnn.id
-      await updateAnnotationColor(bookId, id, color)
-      setAnnotations((prev) => prev.map((a) => (a.id === id ? { ...a, color } : a)))
+      try {
+        await updateAnnotationColor(bookId, id, color)
+        setAnnotations((prev) => prev.map((a) => (a.id === id ? { ...a, color } : a)))
+      } catch (err) {
+        setToast(writeErrorText(err, '修改高亮颜色'))
+      }
     },
     [activeAnn, bookId],
   )
@@ -1333,15 +1385,20 @@ export function Reader({ bookId, onExit }: Props) {
     async (ids: string[]) => {
       if (ids.length === 0) return
       const set = new Set(ids)
-      await Promise.all(ids.map((id) => removeAnnotation(bookId, id)))
-      setAnnotations((prev) => prev.filter((a) => !set.has(a.id)))
-      setExportChecked((prev) => {
-        const next: Record<string, boolean> = {}
-        for (const [k, v] of Object.entries(prev)) if (!set.has(k)) next[k] = v
-        return next
-      })
-      setActiveAnn((cur) => (cur && cur.id && set.has(cur.id) ? null : cur))
-      setToast(ids.length > 1 ? `已删除 ${ids.length} 条高亮` : '已删除 1 条高亮')
+      try {
+        await Promise.all(ids.map((id) => removeAnnotation(bookId, id)))
+        setAnnotations((prev) => prev.filter((a) => !set.has(a.id)))
+        setExportChecked((prev) => {
+          const next: Record<string, boolean> = {}
+          for (const [k, v] of Object.entries(prev)) if (!set.has(k)) next[k] = v
+          return next
+        })
+        setActiveAnn((cur) => (cur && cur.id && set.has(cur.id) ? null : cur))
+        setToast(ids.length > 1 ? `已删除 ${ids.length} 条高亮` : '已删除 1 条高亮')
+      } catch (err) {
+        // 没删掉就照旧显示（界面说删了、库里还在 = 下次打开又冒出来，同样是分叉）
+        setToast(writeErrorText(err, '删除高亮'))
+      }
     },
     [bookId],
   )
