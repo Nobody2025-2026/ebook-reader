@@ -1,5 +1,8 @@
 // EPUB 解析层：封装 @lingo-reader/epub-parser，对上层只暴露"书"的概念。
-// 浏览器传 File，Node 传文件路径——同一套 API，为后期套 Tauri 留口。
+// 浏览器传 File，Node 传文件路径——同一套 API、共用全部解析逻辑（4 本真实
+// EPUB 的自动验收就是靠 Node 路径跑的）。注意：Node 路径**仅测试 / 脚本**在用，
+// Tauri 桌面端走的是 File —— webview 里没有 Node 运行时，将来若要支持"直接打开
+// 本地书"，应当接 @tauri-apps/plugin-fs，别照着这条给它传字符串路径。
 import { initEpubFile, type EpubFile } from '@lingo-reader/epub-parser'
 import { unzipSync, zipSync } from 'fflate'
 import { createResourceIndex } from './resources'
@@ -363,6 +366,48 @@ export function fixEpubBytes(bytes: Uint8Array): Uint8Array | undefined {
   }
 }
 
+/**
+ * 取一个 Node 内置模块。**故意**用变量 + `@vite-ignore` 绕开打包器的静态分析。
+ *
+ * 背景写清楚，免得后人好心"优化"回去：
+ * - 这几条 import 只在 `typeof input === 'string'`（Node 测试 / 脚本）时执行，
+ *   浏览器与 Tauri 永远传 File、根本走不到这里。
+ * - 但打包器一看到字面量 `'node:fs'`，就会把它 externalize 成浏览器 stub，
+ *   构建时刷 4 条 "has been externalized for browser compatibility" 警告。
+ * - 原先"用动态 import 就不会打进 bundle"的意图其实是**落空的**：解析库依赖的
+ *   sax.js 早已把同一个 stub 静态引了进来（构建日志里的 INEFFECTIVE_DYNAMIC_IMPORT
+ *   说的就是这件事），拆都拆不出去。
+ * - 换成变量之后，打包器不再处理这几条，警告消失；运行时行为**完全不变**
+ *   （Node 下 import() 照常解析内置模块）。
+ *
+ * 附带好处：浏览器里若真走到这条分支（只可能是有人给 openEpub 传了字符串路径），
+ * 会拿到一句明确报错，而不是 stub 的 undefined 崩在调用点后面。
+ */
+async function nodeModule<T>(name: string): Promise<T> {
+  if (typeof window !== 'undefined') {
+    throw new Error(
+      `nodeModule("${name}") 仅在 Node 环境可用 —— 浏览器 / 桌面端请传 File，不要传文件路径`,
+    )
+  }
+  return (await import(/* @vite-ignore */ name)) as T
+}
+
+/* 只声明真正用到的那几个 API，免得把 Node 类型引进浏览器侧代码 */
+interface NodeFsPromises {
+  readFile: (path: string) => Promise<Uint8Array>
+  writeFile: (path: string, data: Uint8Array) => Promise<void>
+}
+interface NodeFsSync {
+  mkdtempSync: (prefix: string) => string
+  rmSync: (path: string, options?: { force?: boolean }) => void
+}
+interface NodeOs {
+  tmpdir: () => string
+}
+interface NodePath {
+  join: (...parts: string[]) => string
+}
+
 export interface OpenEpubOptions {
   /**
    * 仅 Node 端生效：解析时图片/CSS 的落盘目录，默认当前目录下的 ./images。
@@ -373,14 +418,11 @@ export interface OpenEpubOptions {
   resourceSaveDir?: string
 }
 
-/**
- * 读取输入的原始字节：浏览器 File 走 arrayBuffer，Node 路径走 fs。
- * 动态 import node:fs 是为了浏览器 bundle 不被打进 Node 内置模块。
- */
+/** 读取输入的原始字节：浏览器 File 走 arrayBuffer，Node 路径走 fs。 */
 async function readInputBytes(input: File | string): Promise<Uint8Array> {
   if (typeof input === 'string') {
-    const { readFile } = await import('node:fs/promises')
-    return new Uint8Array(await readFile(input))
+    const fs = await nodeModule<NodeFsPromises>('node:fs/promises')
+    return new Uint8Array(await fs.readFile(input))
   }
   return new Uint8Array(await input.arrayBuffer())
 }
@@ -396,14 +438,14 @@ async function materialize(
   if (typeof input !== 'string') {
     return { input: new File([bytes as unknown as BlobPart], input.name, { type: input.type }) }
   }
-  const [{ mkdtempSync }, { tmpdir }, { join }, { writeFile }] = await Promise.all([
-    import('node:fs'),
-    import('node:os'),
-    import('node:path'),
-    import('node:fs/promises'),
+  const [fsSync, os, path, fs] = await Promise.all([
+    nodeModule<NodeFsSync>('node:fs'),
+    nodeModule<NodeOs>('node:os'),
+    nodeModule<NodePath>('node:path'),
+    nodeModule<NodeFsPromises>('node:fs/promises'),
   ])
-  const tempPath = join(mkdtempSync(join(tmpdir(), 'epub-fix-')), 'fixed.epub')
-  await writeFile(tempPath, bytes)
+  const tempPath = path.join(fsSync.mkdtempSync(path.join(os.tmpdir(), 'epub-fix-')), 'fixed.epub')
+  await fs.writeFile(tempPath, bytes)
   return { input: tempPath, tempPath }
 }
 
@@ -519,7 +561,10 @@ export async function openEpub(
       epub.destroy()
       resources.revoke()
       if (tempPath) {
-        void import('node:fs').then((fs) => fs.rmSync(tempPath, { force: true }))
+        // 临时文件清理失败不该冒泡到用户（文件落在系统 tmp 目录，兜底有系统回收）
+        void nodeModule<NodeFsSync>('node:fs')
+          .then((fs) => fs.rmSync(tempPath, { force: true }))
+          .catch(() => {})
       }
     },
   }
