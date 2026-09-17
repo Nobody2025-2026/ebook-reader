@@ -43,7 +43,8 @@ import {
 } from '../src/lib/storage'
 import { DEFAULT_SETTINGS, PAGE_MARGIN_MAX, pageMarginCapPx } from '../src/lib/settings'
 
-const { openEpubMock, mockBook, furnitureBook, divOnlyBook, linkBook } = vi.hoisted(() => {
+const { openEpubMock, mockBook, furnitureBook, divOnlyBook, linkBook, brokenChapterBook } =
+  vi.hoisted(() => {
   const openEpubMock = vi.fn()
   const mockBook = {
     meta: { title: '测试书', author: '主上大人', language: 'zh', cover: undefined },
@@ -130,7 +131,33 @@ const { openEpubMock, mockBook, furnitureBook, divOnlyBook, linkBook } = vi.hois
     resolveHref: () => undefined,
     destroy: vi.fn(),
   }
-  return { openEpubMock, mockBook, furnitureBook, divOnlyBook, linkBook }
+  // 残章样本：第二章（`bad`）加载必抛错。守的是「失败必须让用户看见」——
+  // 这条路径原先只 setError() 不改 status，而 error 只在 status === 'error' 时
+  // 渲染，于是正文一片空白、提示永远不显示，是纯静默失败。
+  const brokenChapterBook = {
+    meta: { title: '残章书', author: 'x', language: 'zh', cover: undefined },
+    chapters: [
+      { id: 'c1', label: '第一章' },
+      { id: 'bad', label: '坏章' },
+      { id: 'c3', label: '第三章' },
+    ],
+    chapterWeights: [10, 10, 10],
+    toc: [],
+    loadChapter: async (id: string) => {
+      if (id === 'bad') throw new Error('zip 读取失败')
+      return { html: `<p>${id} 的正文</p>`, css: [] }
+    },
+    resolveHref: () => undefined,
+    destroy: vi.fn(),
+  }
+  return {
+    openEpubMock,
+    mockBook,
+    furnitureBook,
+    divOnlyBook,
+    linkBook,
+    brokenChapterBook,
+  }
 })
 
 vi.mock('../src/lib/epub', () => ({ openEpub: openEpubMock }))
@@ -524,6 +551,38 @@ describe('阅读器', () => {
       fireEvent.scroll(scroller)
 
       await waitFor(() => expect(screen.getByText('c1 的正文')).toBeInTheDocument())
+    } finally {
+      if (SH) Object.defineProperty(Element.prototype, 'scrollHeight', SH)
+      else Reflect.deleteProperty(Element.prototype, 'scrollHeight')
+      if (CH) Object.defineProperty(Element.prototype, 'clientHeight', CH)
+      else Reflect.deleteProperty(Element.prototype, 'clientHeight')
+    }
+  })
+
+  // ↓↓ 回归用例：单章加载失败原先是**静默**的 —— 只 setError() 不改 status，
+  // 而 error 只在 status === 'error' 时渲染，于是正文一片空白、
+  // 那句「第 N 章加载失败」永远显示不出来。
+  it('某一章加载失败：给出可见提示，而不是闷声留一片空白', async () => {
+    await saveBook(meta, new File(['a'], 'book.epub'))
+    openEpubMock.mockResolvedValue(brokenChapterBook)
+
+    const SH = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollHeight')
+    const CH = Object.getOwnPropertyDescriptor(Element.prototype, 'clientHeight')
+    Object.defineProperty(Element.prototype, 'scrollHeight', { configurable: true, get: () => 10000 })
+    Object.defineProperty(Element.prototype, 'clientHeight', { configurable: true, get: () => 600 })
+    try {
+      const { container } = render(<Reader bookId="b1" onExit={vi.fn()} />)
+      await waitFor(() => expect(screen.getByText('c1 的正文')).toBeInTheDocument())
+
+      const scroller = container.querySelector('.reader-scroll') as HTMLElement
+      scroller.scrollTop = 9400
+      fireEvent.scroll(scroller)
+
+      // 失败必须看得见（role=status，读屏也会播报）
+      await waitFor(() => expect(screen.getByText(/第 2 章加载失败/)).toBeInTheDocument())
+      // 但不能因为一章就把整本书判死刑：错误页不该出现，已加载的章节照常可读
+      expect(screen.queryByText('打不开这本书')).toBeNull()
+      expect(screen.getByText('c1 的正文')).toBeInTheDocument()
     } finally {
       if (SH) Object.defineProperty(Element.prototype, 'scrollHeight', SH)
       else Reflect.deleteProperty(Element.prototype, 'scrollHeight')

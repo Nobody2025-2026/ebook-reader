@@ -1050,6 +1050,27 @@ body {
   align-items: center;
   justify-content: center;
   gap: 10px;
+  /* 显式落一次底色/前景：降级页渲染在 #root 下、**不在 .reader 内**，
+     拿不到 .reader.theme-night 里重定义的调色板（见下面那条媒体查询）。 */
+  background: var(--bg);
+  color: var(--fg);
+}
+
+/* 系统偏好深色时，降级页单独翻一次深色（取值照抄 .reader.theme-night）。
+   默认主题就是「跟随系统」，所以这条覆盖大多数夜间场景 —— 否则夜里崩一下
+   会弹出一张刺眼的白屏，等于二次惊吓。
+   已知局限：用户**手选**「夜间」而系统是浅色时，这里仍是浅色。主题存在
+   IndexedDB 里、读它是异步的，等读到再改会先闪一下白，不如渲染时就定死。 */
+@media (prefers-color-scheme: dark) {
+  .state-page {
+    --bg: #17171b;
+    --surface: #232328;
+    --fg: #d6d6de;
+    --muted: #9a9aa6;
+    --line: #35353d;
+    --accent: #a49cf8;
+    --danger: #e88b8b;
+  }
 }
 
 .state-hint {
@@ -1065,6 +1086,41 @@ body {
   color: var(--muted);
   font-size: 14px;
   margin: 0 0 8px;
+}
+
+/* ---------- 错误边界的降级页 ---------- */
+/* 出错时用户最需要的是「还能不能救」，所以两个按钮横排、详情默认收起 */
+.state-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.state-details {
+  max-width: min(560px, calc(100vw - 40px));
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.state-details > summary {
+  cursor: pointer;
+  padding: 4px 0;
+}
+
+.state-detail {
+  /* 错误信息可能是一长串调用栈：允许横向滚动，但绝不撑破视口 */
+  max-height: 220px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--fg);
+  font-size: 12px;
+  text-align: left;
 }
 
 /* ---------- 高亮（字符级）---------- */

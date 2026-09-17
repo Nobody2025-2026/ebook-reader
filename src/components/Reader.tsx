@@ -324,9 +324,16 @@ export function Reader({ bookId, onExit }: Props) {
       )
       return true
     } catch (err) {
-      setError(`第 ${index + 1} 章加载失败：${err instanceof Error ? err.message : String(err)}`)
+      // 单章失败**不整页报错**：这本书其它章还能读，为了一章把整本书判死刑更糟。
+      // 但也不能闷声不响 —— 原先这里只 setError()，而 error 只在
+      // status === 'error' 时才渲染（见下面的错误态分支），status 此时是 'ready'，
+      // 于是用户看到的是一片空白正文，那句「第 N 章加载失败」永远显示不出来。
+      // 改用 toast：可见、不阻断，2.5 秒后自动消失。
+      setToast(`第 ${index + 1} 章加载失败：${err instanceof Error ? err.message : String(err)}`)
       return false
     } finally {
+      // 失败了也把 in-flight 标记摘掉：滚动回附近时还能再试一次，
+      // 而不是让这一章永远卡在「正在加载」的假象里
       inFlightRef.current.delete(index)
     }
   }, [])
@@ -681,7 +688,10 @@ export function Reader({ bookId, onExit }: Props) {
           fontFamily: customFontValue(meta.family),
         })
       } catch (err) {
-        setError(`字体加载失败：${err instanceof Error ? err.message : String(err)}`)
+        // 同上面的单章失败：这里原先也是只 setError() 不改 status，而 error 只在
+        // status === 'error' 时渲染 —— 用户选完字体、什么都没发生，是纯静默失败。
+        // 上传字体是用户主动操作，做完了必须有回音。
+        setToast(`字体加载失败：${err instanceof Error ? err.message : String(err)}`)
       }
     },
     [settings.customFonts],
