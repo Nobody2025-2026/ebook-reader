@@ -1620,6 +1620,12 @@ body {
   padding: 12px 16px 20px;
 }
 
+/* 键盘用户得知道焦点停在这个滚动区里（写法照抄 .reader-scroll，同为 tabIndex=0 容器） */
+.shortcut-body:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
 .shortcut-group + .shortcut-group {
   margin-top: 18px;
 }

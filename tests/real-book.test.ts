@@ -131,6 +131,18 @@ describe.skipIf(!hasRealBook)('真实样本《涛动周期论》', () => {
     expect(decoded.some((bytes) => bytes.length === originBytes.length &&
       bytes.every((b, i) => b === originBytes[i]))).toBe(true)
   })
+
+  it('含图章节的每张图都补上了 alt —— 读屏不再只念一句「图片」', async () => {
+    // 单测守住 ensureImageAlt 本身，这条守的是"loadChapter 真的把它接上了"：
+    // 书里几乎不写 alt，光有函数没人调用等于白做。
+    const target = book.chapters.find((c) => c.id === 'Chapter4_1') ?? book.chapters[1]
+    const { html } = await book.loadChapter(target.id)
+    const tags = [...html.matchAll(/<img\b[^>]*>/gi)].map((m) => m[0])
+    expect(tags.length).toBeGreaterThan(0)
+
+    const missingAlt = tags.filter((tag) => !/\salt\s*=/i.test(tag))
+    expect(missingAlt).toEqual([])
+  })
 })
 
 // 第二本真实样本：Kindle 风格转换产物。页面全叫 part0000.xhtml，一个 cover 字样都没有；

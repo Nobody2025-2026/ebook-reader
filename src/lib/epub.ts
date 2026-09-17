@@ -262,6 +262,64 @@ function matchChapterImage(html: string): string | undefined {
   )
 }
 
+/* ---------- 给正文图片补 alt（无障碍） ---------- */
+
+/** 无 g 标志，可安全用于 test()；下面每条各自单开，免得踩 RegExp.lastIndex 的坑 */
+const IMG_ANY_RE = /<img\b/i
+const IMG_COUNT_G = /<img\b/gi
+const IMG_TAG_G = /<img\b[^>]*?>/gi
+/** 判断标签里有没有 alt 属性：要求属性名前是空白，免得把 data-alt= 认成 alt= */
+const ALT_ATTR_RE = /\salt\s*=/i
+
+/** 转义将要放进 HTML 属性值的文本（书名里可能带 & 或引号） */
+function escapeAttr(value: string): string {
+  return value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;')
+}
+
+/**
+ * 给正文里的 <img> 补 alt —— 书里绝大多数图片都不写，读屏用户只能听到一句
+ * 「图片」。封面尤其糟：那是读者对一本书的第一印象，却完全不可读。
+ *
+ * 分三档，按"我们究竟知道多少"来给：
+ * 1. 书里写了 alt 的 → 原样不动（尊重作者）
+ * 2. **首章**里只有这一张图、且剥掉标签后几乎没有文字 → 判定为封面页，
+ *    给「《书名》封面」
+ * 3. 其余没写 alt 的 → 「插图」：不假装知道画的是什么，但让读屏知道此处有图，
+ *    比一声不吭地跳过有用（WCAG 要求非装饰性图片必须有替代文本）
+ *
+ * 第 2 条为什么必须带「首章」：中间章节里"一张大图 + 没文字"很常见，那是整页
+ * 插图而不是封面。只看"单图无字"会把它误标成封面。
+ *
+ * 为什么用正则而不是 DOMParser：这段 html 是字符串进字符串出，走一遍 DOM 再
+ * 序列化会把书里的命名空间声明、自闭合写法改得面目全非。补一个属性**不动块结构**，
+ * 因此不影响高亮锚点（chapterIndex + blockIndex + 块内字符偏移）。
+ * 也**不要在 render 里调用**：每次生成新字符串会冲掉 ChapterBody 的 memo，
+ * 连带把画好的高亮 <mark> 一起重绘掉。这里是数据层，一章只处理一次。
+ */
+export function ensureImageAlt(
+  html: string,
+  options: { bookTitle?: string; isFirstChapter?: boolean } = {},
+): string {
+  if (!IMG_ANY_RE.test(html)) return html
+
+  const imgCount = html.match(IMG_COUNT_G)?.length ?? 0
+  const textOnly = html.replace(/<[^>]*>/g, '').replace(/\s+/g, '')
+  const isCoverPage = !!options.isFirstChapter && imgCount === 1 && textOnly.length < 20
+  const fallback = isCoverPage
+    ? options.bookTitle
+      ? `《${options.bookTitle}》封面`
+      : '封面'
+    : '插图'
+
+  let changed = false
+  const out = html.replace(IMG_TAG_G, (tag) => {
+    if (ALT_ATTR_RE.test(tag)) return tag
+    changed = true
+    return tag.replace(/^<img\b/i, `<img alt="${escapeAttr(fallback)}"`)
+  })
+  return changed ? out : html
+}
+
 /**
  * 加载某个 manifest 项对应的章节并抠图。
  * 坑：manifest 里的 href 是裸路径，resolveHref 只认带 "epub:" 前缀的；
@@ -506,9 +564,13 @@ export async function openEpub(
   // 图片/CSS 地址自己从 zip 生成，不碰解析库那套会被 destroy 清空的全局缓存
   const resources = createResourceIndex(bytes)
 
+  // 书名提前算出来：补图片 alt 要用。loadChapter 是同一对象字面量上的方法，
+  // 回头读 this.meta 又脆又绕，不如先落到局部变量。
+  const bookTitle = normalizeTitle(metadata.title)
+
   return {
     meta: {
-      title: normalizeTitle(metadata.title),
+      title: bookTitle,
       author: metadata.creator?.[0]?.contributor ?? '',
       language: metadata.language ?? '',
       cover: await safeCover(epub, input),
@@ -518,15 +580,18 @@ export async function openEpub(
     toc: collectToc(epub, idToIndex),
     async loadChapter(id: string) {
       const href = hrefById.get(id) ?? ''
+      // 补图片 alt 用：只有"首章 + 单图 + 无文字"才当封面（规则见 ensureImageAlt）
+      const altOptions = { bookTitle, isFirstChapter: idToIndex.get(id) === 0 }
       // 优先用 zip 里的原始 html：src 还是书里的相对路径，能自己解析成可靠地址。
       // 解析库那份里的 src 已经被换成它自己的 blob URL，一旦被 destroy() revoke 就全废了。
       const raw = resources.rawChapterHtml(href)
       if (raw) {
-        return { html: resources.inlineAssets(raw.replace(XML_PROLOG_RE, ''), href), css: [] }
+        const inlined = resources.inlineAssets(raw.replace(XML_PROLOG_RE, ''), href)
+        return { html: ensureImageAlt(inlined, altOptions), css: [] }
       }
       // zip 里定位不到（href 太脏）才退回解析库的输出，老行为兜底
       const { html, css } = await epub.loadChapter(id)
-      return { html, css: css ?? [] }
+      return { html: ensureImageAlt(html, altOptions), css: css ?? [] }
     },
     resolveHref: (href: string) => epub.resolveHref(href),
     resolveHrefToChapter(href: string, fromChapterIndex?: number) {

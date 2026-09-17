@@ -2463,7 +2463,9 @@ export function Reader({ bookId, onExit }: Props) {
                 ×
               </button>
             </div>
-            <div className="shortcut-body">
+            {/* tabIndex=0：这层是滚动容器，里面全是不可聚焦的文字，不给它键盘焦点
+                的话键盘用户根本滚不动（axe 报的 scrollable-region-focusable）。 */}
+            <div className="shortcut-body" tabIndex={0}>
               {SHORTCUT_GROUPS.map((group) => (
                 <section className="shortcut-group" key={group.id}>
                   <div className="shortcut-group__title">{group.title}</div>
