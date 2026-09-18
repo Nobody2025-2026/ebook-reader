@@ -66,6 +66,38 @@ export function writeErrorText(err: unknown, fallbackLabel: string): string {
   return `${fallbackLabel}：${err instanceof Error ? err.message : String(err)}`
 }
 
+// ---- 读失败：降级，但必须留下痕迹 ----
+//
+// 读失败的处置和写失败**不一样**：
+//   - 写失败 = 用户操作没生效 → 抛出去，让他知道没存上（见 writeGuard）
+//   - 读失败 = 多读一次没读出来 → 不该顺手把整本书判死刑。书签/笔记读不出来
+//     降级成空列表，**书照样能读**；但必须留下提示，否则用户会以为笔记真没了。
+//
+// 所以这里降级的同时发一条故障通知，由 UI 订阅后给回音。
+// 注意：**书库（listBooks）与书文件不在此列** —— 那两样读不出来是致命的，
+// 必须让调用方拿到错误去显示"书库打不开"，降级成空书库会让人以为书没了。
+
+type StorageFailureListener = (label: string) => void
+const failureListeners = new Set<StorageFailureListener>()
+
+/** 订阅"读失败"故障。返回取消订阅的函数。 */
+export function onStorageFailure(cb: StorageFailureListener): () => void {
+  failureListeners.add(cb)
+  return () => {
+    failureListeners.delete(cb)
+  }
+}
+
+async function readGuard<T>(label: string, fn: () => Promise<T>, fallback: T): Promise<T> {
+  try {
+    return await fn()
+  } catch (err) {
+    console.error(`[阅读器] ${label}失败（已降级）：`, err)
+    for (const cb of failureListeners) cb(label)
+    return fallback
+  }
+}
+
 /** 写操作统一走这里：抛错的口径一致、控制台一定留痕。
  * label 用中文的「动作名」，直接进用户看到的提示文案（如「添加高亮失败：……」）。
  */
@@ -136,18 +168,24 @@ export async function listBooks(): Promise<BookMeta[]> {
 }
 
 export async function listProgress(): Promise<Record<string, ReadingProgress>> {
-  const allKeys = await keys()
-  const progressKeys = allKeys.filter(
-    (k): k is string => typeof k === 'string' && k.startsWith(KEY_PROGRESS),
+  return readGuard(
+    '读取进度',
+    async () => {
+      const allKeys = await keys()
+      const progressKeys = allKeys.filter(
+        (k): k is string => typeof k === 'string' && k.startsWith(KEY_PROGRESS),
+      )
+      const result: Record<string, ReadingProgress> = {}
+      await Promise.all(
+        progressKeys.map(async (k) => {
+          const p = await get<ReadingProgress>(k)
+          if (p) result[k.slice(KEY_PROGRESS.length)] = p
+        }),
+      )
+      return result
+    },
+    {},
   )
-  const result: Record<string, ReadingProgress> = {}
-  await Promise.all(
-    progressKeys.map(async (k) => {
-      const p = await get<ReadingProgress>(k)
-      if (p) result[k.slice(KEY_PROGRESS.length)] = p
-    }),
-  )
-  return result
 }
 
 export async function saveProgress(id: string, progress: ReadingProgress): Promise<void> {
@@ -155,7 +193,7 @@ export async function saveProgress(id: string, progress: ReadingProgress): Promi
 }
 
 export async function getProgress(id: string): Promise<ReadingProgress | undefined> {
-  return get<ReadingProgress>(KEY_PROGRESS + id)
+  return readGuard('读取进度', () => get<ReadingProgress>(KEY_PROGRESS + id), undefined)
 }
 
 /** 从头读：清除一本书的阅读进度（不删书、不删文件） */
@@ -169,8 +207,12 @@ export async function clearProgress(id: string): Promise<void> {
  * 而且删书时只要删一个 key，不会留孤儿。
  */
 export async function listBookmarks(bookId: string): Promise<Bookmark[]> {
-  const list = await get<Bookmark[]>(KEY_BOOKMARKS + bookId)
-  return sortBookmarks(list ?? [])
+  // 书签读不出来就当没有，但书要能读（故障通知由 UI 提示，见 readGuard）
+  return readGuard(
+    '读取书签',
+    async () => sortBookmarks((await get<Bookmark[]>(KEY_BOOKMARKS + bookId)) ?? []),
+    [],
+  )
 }
 
 /** 加书签。同一位置已有则不重复写，返回 false 让 UI 提示"这个位置已经有了" */
@@ -248,8 +290,14 @@ export function newAnnotationId(): string {
 }
 
 export async function listAnnotations(bookId: string): Promise<Annotation[]> {
-  const list = (await get<Annotation[]>(KEY_ANNOTATIONS + bookId)) ?? []
-  return list.sort((a, b) => a.chapterIndex - b.chapterIndex || a.startOffset - b.startOffset)
+  return readGuard(
+    '读取高亮笔记',
+    async () => {
+      const list = (await get<Annotation[]>(KEY_ANNOTATIONS + bookId)) ?? []
+      return list.sort((a, b) => a.chapterIndex - b.chapterIndex || a.startOffset - b.startOffset)
+    },
+    [],
+  )
 }
 
 /** 加高亮。同一区间已存在则不重复写，返回 false 让 UI 提示 */
@@ -357,22 +405,28 @@ export interface ReadingStats {
 }
 
 export async function getStats(id: string): Promise<ReadingStats | undefined> {
-  return get<ReadingStats>(KEY_STATS + id)
+  return readGuard('读取阅读统计', () => get<ReadingStats>(KEY_STATS + id), undefined)
 }
 
 export async function listStats(): Promise<Record<string, ReadingStats>> {
-  const allKeys = await keys()
-  const statKeys = allKeys.filter(
-    (k): k is string => typeof k === 'string' && k.startsWith(KEY_STATS),
+  return readGuard(
+    '读取阅读统计',
+    async () => {
+      const allKeys = await keys()
+      const statKeys = allKeys.filter(
+        (k): k is string => typeof k === 'string' && k.startsWith(KEY_STATS),
+      )
+      const result: Record<string, ReadingStats> = {}
+      await Promise.all(
+        statKeys.map(async (k) => {
+          const s = await get<ReadingStats>(k)
+          if (s) result[k.slice(KEY_STATS.length)] = s
+        }),
+      )
+      return result
+    },
+    {},
   )
-  const result: Record<string, ReadingStats> = {}
-  await Promise.all(
-    statKeys.map(async (k) => {
-      const s = await get<ReadingStats>(k)
-      if (s) result[k.slice(KEY_STATS.length)] = s
-    }),
-  )
-  return result
 }
 
 /** 进入阅读页时调用一次：记一次阅读会话（首次打开初始化记录） */

@@ -71,6 +71,12 @@ export default function App() {
   // 浏览器拒绝持久化存储时（磁盘紧张会连带把书、进度、笔记一起清掉），
   // 书库给一条常驻提示，引导用户用导出做备份。拿不到保护是真事，不该瞒着用户。
   const [storageUnprotected, setStorageUnprotected] = useState(false)
+  /**
+   * 书库**读不出来**与「书库是空的」是两回事，绝不能混为一谈：
+   * 数据库打不开时降级成空书架，用户看到的是"我的书全没了"。
+   * 所以要单独一个错误态，并且明确告诉他"书还在浏览器里"。
+   */
+  const [libraryError, setLibraryError] = useState('')
   // 后台补封面是异步的，可能在组件卸载后才跑完；卸载后不能再 setState，
   // 否则 React 在 jsdom 环境销毁后仍会调度更新（测试里报 "window is not defined"）。
   const mountedRef = useRef(true)
@@ -82,8 +88,18 @@ export default function App() {
   }, [])
 
   const refresh = useCallback(async () => {
-    const [metas, progress, stats] = await Promise.all([listBooks(), listProgress(), listStats()])
+    // listBooks 是**唯一没降级**的读操作：书库读不出来必须让这里拿到错误，
+    // 降级成空书架 = 骗用户说"你没书了"。进度和统计读不出来则无妨（列表已降级）。
+    let metas: Awaited<ReturnType<typeof listBooks>>
+    try {
+      metas = await listBooks()
+    } catch (err) {
+      if (mountedRef.current) setLibraryError(writeErrorText(err, '打开书库'))
+      return
+    }
+    const [progress, stats] = await Promise.all([listProgress(), listStats()])
     if (!mountedRef.current) return
+    setLibraryError('')
     setBooks(metas.map((meta) => ({ ...meta, progress: progress[meta.id], stats: stats[meta.id] })))
     // 后台补封面：补完一本刷新一次书架，让封面逐个出现，不阻塞首屏
     void backfillMissingCovers(metas, () => {
@@ -178,6 +194,23 @@ export default function App() {
 
   if (route.name === 'read') {
     return <Reader bookId={route.id} onExit={goLibrary} />
+  }
+
+  if (libraryError) {
+    return (
+      <div className="state-page" role="alert">
+        <h1 className="state-hint state-error">书库打不开</h1>
+        <p className="state-sub">{libraryError}</p>
+        <p className="state-sub">
+          你的书还在这台设备上，<strong>没有丢失</strong>。请别清理浏览器数据，过一会儿再试。
+        </p>
+        <div className="state-actions">
+          <button className="btn" onClick={() => void refresh()}>
+            重试
+          </button>
+        </div>
+      </div>
+    )
   }
 
   return (

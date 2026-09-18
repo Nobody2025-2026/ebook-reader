@@ -27,6 +27,7 @@ import {
   updateAnnotationColor,
   addReadingSeconds,
   getStats,
+  onStorageFailure,
   touchOpen,
   writeErrorText,
   type Annotation,
@@ -561,6 +562,18 @@ export function Reader({ bookId, onExit }: Props) {
       clearTimeout(hideTimer)
     }
   }, [status, loaded])
+
+  /**
+   * 读失败被降级成空列表（书签 / 笔记 / 统计读不出来）时给回音。
+   * 不提示的话，用户看到"书签是空的"会以为书签丢了 —— 而数据其实还在库里。
+   */
+  useEffect(
+    () =>
+      onStorageFailure((label) => {
+        setToast(`${label}失败：这次没读出来，数据应该还在（可稍后重试）`)
+      }),
+    [],
+  )
 
   const flushProgress = useCallback(() => {
     if (!latestProgress.current) return
