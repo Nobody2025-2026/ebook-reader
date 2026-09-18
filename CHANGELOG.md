@@ -4,7 +4,7 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
-## [待发布]
+## [0.1.7] - 2026-09-19
 
 ### 修复（稳定性：出错不再整页白屏）
 
