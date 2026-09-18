@@ -57,6 +57,11 @@ import {
   type Annotation,
   type BookMeta,
 } from '../src/lib/storage'
+// 排版设置与自定义字体这两个模块**自己** import idb-keyval 落库，
+// 曾经绕过守卫（写失败变成未捕获的 rejection，真浏览器复核时才抓到）。
+// 这里把它们一并纳入，防止以后有人再把守卫绕开。
+import { DEFAULT_SETTINGS, loadSettings, saveSettings } from '../src/lib/settings'
+import { addCustomFont, listCustomFonts, removeCustomFont } from '../src/lib/customFont'
 
 const meta: BookMeta = {
   id: 'b1',
@@ -208,5 +213,66 @@ describe('writeErrorText（调用方统一用它生成提示文案）', () => {
   it('别的错误走 fallback，不会串味', () => {
     expect(writeErrorText(new Error('解析炸了'), '导入书籍')).toBe('导入书籍：解析炸了')
     expect(writeErrorText('字符串错误', '删除书籍')).toBe('删除书籍：字符串错误')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 排版设置 / 自定义字体：曾经绕过守卫的两个模块
+//
+// 背景：真浏览器复核（.workbuddy/tools/reader-quota-check.py）时，把"写满"开关
+// 一打开，页面立刻冒出未捕获的 `The quota has been exceeded.` —— 顺着查到
+// settings.ts 与 customFont.ts 直接 import idb-keyval，写失败没人接。
+// 守卫已抽到 src/lib/idb-guard.ts 由三个模块共用，这几条负责钉住它。
+// ---------------------------------------------------------------------------
+describe('排版设置（settings.ts 走同一套守卫）', () => {
+  it('保存失败必须抛 StorageWriteError，不说人话就没人知道字号没存上', async () => {
+    failWith(quotaError())
+    await expect(saveSettings(DEFAULT_SETTINGS)).rejects.toBeInstanceOf(StorageWriteError)
+    const err = await saveSettings(DEFAULT_SETTINGS).catch((e: unknown) => e)
+    expect((err as Error).message).toContain('保存排版设置失败')
+    expect((err as Error).message).toContain('存储空间已满')
+  })
+
+  it('读取失败降级为默认设置——进不去书比排版回到默认严重得多', async () => {
+    ctl.failWrites = false
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    // 读走 get：让它抛，验证是降级而不是把页面搞崩
+    const getSpy = vi.spyOn(await import('idb-keyval'), 'get')
+    getSpy.mockRejectedValueOnce(new DOMException('boom', 'InvalidStateError'))
+    const s = await loadSettings()
+    expect(s).toEqual(DEFAULT_SETTINGS)
+    getSpy.mockRestore()
+    spy.mockRestore()
+  })
+
+  it('写入正常时能存能读', async () => {
+    ctl.failWrites = false
+    await expect(saveSettings({ ...DEFAULT_SETTINGS, fontSize: 24 })).resolves.toBeUndefined()
+    expect((await loadSettings()).fontSize).toBe(24)
+  })
+})
+
+describe('自定义字体（customFont.ts 走同一套守卫）', () => {
+  const fontFile = () =>
+    new File([new Uint8Array([1, 2, 3, 4])], 'test.ttf', { type: 'font/ttf' })
+
+  it('字体二进制保存失败必须抛（几 MB 的东西最撞配额）', async () => {
+    failWith(quotaError())
+    await expect(addCustomFont(fontFile())).rejects.toBeInstanceOf(StorageWriteError)
+    const err = await addCustomFont(fontFile()).catch((e: unknown) => e)
+    expect((err as Error).message).toContain('保存字体文件失败')
+  })
+
+  it('删除失败也必须抛——否则界面上没了、刷新又冒出来', async () => {
+    failWith(quotaError())
+    await expect(removeCustomFont('f1')).rejects.toBeInstanceOf(StorageWriteError)
+  })
+
+  it('读取失败降级为空列表（没有自定义字体照样能读书）', async () => {
+    ctl.failWrites = false
+    const getSpy = vi.spyOn(await import('idb-keyval'), 'get')
+    getSpy.mockRejectedValueOnce(new DOMException('boom', 'InvalidStateError'))
+    await expect(listCustomFonts()).resolves.toEqual([])
+    getSpy.mockRestore()
   })
 })

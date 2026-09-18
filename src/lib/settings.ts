@@ -5,6 +5,7 @@
 //    所以改排版不会丢阅读位置。
 // 3. 只存用户改过的值，缺省走 DEFAULT，保证老数据兼容。
 import { get, set } from 'idb-keyval'
+import { readGuard, writeGuard } from './idb-guard'
 
 /** 用户可选的主题。除三套具体配色外多一个 'auto'＝跟随系统深色偏好（P2-5）。 */
 export type Theme = 'auto' | 'day' | 'sepia' | 'night'
@@ -250,7 +251,13 @@ function normalizeTheme(v: unknown): Theme {
 }
 
 export async function loadSettings(): Promise<ReaderSettings> {
-  const stored = await get<Partial<ReaderSettings>>(KEY_SETTINGS)
+  // 读不出来降级为默认设置（顺便通知订阅者留痕）：设置是外观，
+  // 不该因为一次读失败就连书都进不去。
+  const stored = await readGuard<Partial<ReaderSettings> | undefined>(
+    '读取排版设置',
+    () => get<Partial<ReaderSettings>>(KEY_SETTINGS),
+    undefined,
+  )
   const merged: ReaderSettings = {
     ...DEFAULT_SETTINGS,
     ...(stored ?? {}),
@@ -268,5 +275,6 @@ export async function loadSettings(): Promise<ReaderSettings> {
 }
 
 export async function saveSettings(settings: ReaderSettings): Promise<void> {
-  await set(KEY_SETTINGS, settings)
+  // 写失败必须抛出去：用户拖了字号、下次打开却回到 18px，还以为自己记错了。
+  await writeGuard('保存排版设置', () => set(KEY_SETTINGS, settings))
 }

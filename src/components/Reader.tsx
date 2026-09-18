@@ -252,14 +252,16 @@ export function Reader({ bookId, onExit }: Props) {
   // 导出结果提示（原来完全没有反馈，被当成"没生效"）
   const [toast, setToast] = useState('')
   /**
-   * 后台静默写（进度 / 阅读时长）失败的提示节流。
+   * 后台静默写（进度 / 阅读时长 / 排版设置）失败的提示节流。
    * 这类写每 30 秒来一次，次次弹提示等于骚扰；但一次都不说更糟——
-   * 用户关掉浏览器才发现进度没存上。所以**同一本书只提示一次**。
+   * 用户关掉浏览器才发现进度没存上。所以**同一个动作只提示一次**。
+   * 按 label 分开记账（而不是全局一次）：否则进度那次先弹了，
+   * 排版设置再失败就永远闭嘴——那是两个不同的问题。
    */
-  const silentWriteWarnedRef = useRef(false)
+  const silentWriteWarnedRef = useRef<Set<string>>(new Set())
   const warnSilentWrite = useCallback((err: unknown, label: string) => {
-    if (silentWriteWarnedRef.current) return
-    silentWriteWarnedRef.current = true
+    if (silentWriteWarnedRef.current.has(label)) return
+    silentWriteWarnedRef.current.add(label)
     setToast(writeErrorText(err, label))
   }, [])
 
@@ -683,11 +685,12 @@ export function Reader({ bookId, onExit }: Props) {
   const updateSettings = useCallback((patch: Partial<ReaderSettings>) => {
     setSettings((prev) => {
       const next = { ...prev, ...patch }
-      // 落盘（不阻塞渲染）
-      void saveSettings(next)
+      // 落盘（不阻塞渲染）。失败也要有回音：拖半天字号，下次打开回到 18px，
+      // 用户只会以为自己记错了。（节流：拖滑块会高频触发，弹一次就够）
+      void saveSettings(next).catch((err) => warnSilentWrite(err, '保存排版设置'))
       return next
     })
-  }, [])
+  }, [warnSilentWrite])
 
   /**
    * 恢复默认排版（P2-4）。
@@ -699,10 +702,10 @@ export function Reader({ bookId, onExit }: Props) {
   const resetSettings = useCallback(() => {
     setSettings((prev) => {
       const next: ReaderSettings = { ...DEFAULT_SETTINGS, customFonts: prev.customFonts }
-      void saveSettings(next)
+      void saveSettings(next).catch((err) => warnSilentWrite(err, '恢复默认排版'))
       return next
     })
-  }, [])
+  }, [warnSilentWrite])
 
   // 自定义字体：隐藏的 file input + 选择/删除处理器
   const fileInputRef = useRef<HTMLInputElement | null>(null)
@@ -723,7 +726,7 @@ export function Reader({ bookId, onExit }: Props) {
         // 同上面的单章失败：这里原先也是只 setError() 不改 status，而 error 只在
         // status === 'error' 时渲染 —— 用户选完字体、什么都没发生，是纯静默失败。
         // 上传字体是用户主动操作，做完了必须有回音。
-        setToast(`字体加载失败：${err instanceof Error ? err.message : String(err)}`)
+        setToast(writeErrorText(err, '加载字体'))
       }
     },
     [settings.customFonts],
@@ -732,7 +735,13 @@ export function Reader({ bookId, onExit }: Props) {
   const handleRemoveFont = useCallback(
     async (id: string) => {
       const target = settings.customFonts.find((f) => f.id === id)
-      await removeCustomFont(id)
+      try {
+        await removeCustomFont(id)
+      } catch (err) {
+        // 没删成就别往下走：否则界面上字体没了、库里还在，刷新又冒出来
+        setToast(writeErrorText(err, '删除字体'))
+        return
+      }
       const patch: Partial<ReaderSettings> = {
         customFonts: settings.customFonts.filter((f) => f.id !== id),
       }

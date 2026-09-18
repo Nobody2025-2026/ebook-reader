@@ -8,6 +8,7 @@
 // 应用启动时由 registerCustomFonts() 把二进制重新注册进 document.fonts。
 import { del, get, set } from 'idb-keyval'
 import type { CustomFont } from './settings'
+import { readGuard, writeGuard } from './idb-guard'
 
 const KEY_INDEX = 'customFonts:index' // CustomFont[] 元数据索引
 const blobKey = (id: string) => `customFont:blob:${id}`
@@ -19,7 +20,12 @@ interface StoredFont {
 }
 
 export async function listCustomFonts(): Promise<CustomFont[]> {
-  return (await get<CustomFont[]>(KEY_INDEX)) ?? []
+  // 读不出来降级为空列表：没有自定义字体照样能读书（只是回到系统字体）。
+  return (await readGuard<CustomFont[] | undefined>(
+    '读取自定义字体',
+    () => get<CustomFont[]>(KEY_INDEX),
+    undefined,
+  )) ?? []
 }
 
 /** 生成唯一 id：不用 crypto.randomUUID（jsdom / 部分 WebView 没有）。 */
@@ -33,18 +39,22 @@ export async function addCustomFont(file: File): Promise<CustomFont> {
   const family = `CustomFont-${id.slice(0, 8)}`
   const buf = await file.arrayBuffer()
   const meta: CustomFont = { id, family, filename: file.name }
-  await set(blobKey(id), { family, filename: file.name, buf } satisfies StoredFont)
+  // 字体二进制动辄几 MB，是最容易撞上配额的东西之一 —— 写失败必须说清楚，
+  // 否则用户以为上传成功了，刷新后字体凭空消失。
+  await writeGuard('保存字体文件', () =>
+    set(blobKey(id), { family, filename: file.name, buf } satisfies StoredFont),
+  )
   const list = await listCustomFonts()
   list.push(meta)
-  await set(KEY_INDEX, list)
+  await writeGuard('更新字体列表', () => set(KEY_INDEX, list))
   return meta
 }
 
 /** 删除字体二进制与索引项。调用方负责同步从 settings.customFonts 移除并更新。 */
 export async function removeCustomFont(id: string): Promise<void> {
-  await del(blobKey(id))
+  await writeGuard('删除字体文件', () => del(blobKey(id)))
   const list = (await listCustomFonts()).filter((f) => f.id !== id)
-  await set(KEY_INDEX, list)
+  await writeGuard('更新字体列表', () => set(KEY_INDEX, list))
 }
 
 /**
